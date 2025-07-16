@@ -15,6 +15,7 @@ struct Config: Decodable {
     var hotKey: String? = nil // e.g. "cmd+shift+1"
     var closeOnBlur: Bool? = nil // if true, window closes when it loses focus
     var showOnStart: Bool? = nil  // open palette immediately on launch
+    var showDockIcon: Bool? = nil // show icon in Dock (default false)
 }
 
 func loadConfig() -> Config {
@@ -134,7 +135,11 @@ func registerGlobalHotKey() {
 // MARK: - UI
 
 let app = NSApplication.shared
-app.setActivationPolicy(.regular)
+if config.showDockIcon ?? false {
+    app.setActivationPolicy(.regular) // Dock + menu bar
+} else {
+    app.setActivationPolicy(.accessory) // menu bar only
+}
 
 final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private let onSubmit: (String) -> Void

@@ -8,5 +8,6 @@
   "logFile": "/Users/nsx000542/Obsidian/daily.md",
   "hotKey": "cmd+shift+1",
   "closeOnBlur": true,
-  "showOnStart": true
+  "showOnStart": true,
+  "showDockIcon": false
 } 

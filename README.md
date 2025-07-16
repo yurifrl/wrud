@@ -32,6 +32,7 @@ Key | Type | Default | Description
 `hotKey` | string | `cmd+shift+1` | Global shortcut to open palette
 `closeOnBlur` | bool | true | Close palette when it loses focus
 `showOnStart` | bool | true | Open palette immediately on app launch
+`showDockIcon` | bool | false | Show app icon in Dock (false = menu bar only)
 
 ## How it works
 
