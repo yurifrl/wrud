@@ -5,5 +5,5 @@
   "height": 60,
   "startSelected": true,
   "intervalMinutes": 30,
-  "logFile": "log2.md"
+  "logFile": "~/Obsidian/daily.md"
 } 
