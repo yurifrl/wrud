@@ -14,6 +14,7 @@ struct Config: Decodable {
     var logFile: String? = nil
     var hotKey: String? = nil // e.g. "cmd+shift+1"
     var closeOnBlur: Bool? = nil // if true, window closes when it loses focus
+    var showOnStart: Bool? = nil  // open palette immediately on launch
 }
 
 func loadConfig() -> Config {
@@ -329,8 +330,9 @@ RunLoop.main.add(timer, forMode: .common)
 
 // Register global hot key
 registerGlobalHotKey()
-// Show prompt immediately on first run
-showPalette()
-
+// Show prompt on start if enabled (default true)
+if config.showOnStart ?? true {
+    showPalette()
+}
 // Start app event loop
 app.run() 

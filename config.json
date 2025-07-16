@@ -7,5 +7,6 @@
   "intervalMinutes": 30,
   "logFile": "/Users/nsx000542/Obsidian/daily.md",
   "hotKey": "cmd+shift+1",
-  "closeOnBlur": true
+  "closeOnBlur": true,
+  "showOnStart": true
 } 

@@ -4,9 +4,8 @@ tasks:
   run:
     desc: "Build and run the app in background, logs to logs/app.log"
     cmds:
-      - mkdir -p logs
-      - nohup swift main.swift > logs/app.log 2>&1 & echo $! > .app_pid
-    silent: true
+      - bash -c 'mkdir -p logs && nohup swift main.swift > logs/app.log 2>&1 & echo $! > .app_pid && echo "Started (pid $(cat .app_pid))"'
+    silent: false
 
   stop:
     desc: "Stop the running app if it's active"
@@ -23,11 +22,27 @@ tasks:
     cmds:
       - |
         if [ -f .app_pid ]; then
-          if ps -p $(cat .app_pid) > /dev/null; then
-            echo "Running (pid $(cat .app_pid))"
+          pid=$(cat .app_pid | tr -d '[:space:]')
+          if [ -z "$pid" ]; then
+            echo "PID file is empty. Removing." && rm .app_pid
+          elif ps -p "$pid" > /dev/null 2>&1; then
+            echo "Running (pid $pid)"
           else
             echo "Stale PID file. Removing." && rm .app_pid
           fi
         else
           echo "Not running."
-        fi 
+        fi
+
+  purge:
+    desc: "Kill any stray What Are You Doing? processes still running"
+    cmds:
+      - |
+        pids=$(pgrep -f "swift main.swift" || true)
+        if [ -n "$pids" ]; then
+          echo "Killing stray processes: $pids"
+          kill $pids || true
+        else
+          echo "No stray processes found."
+        fi
+      - rm -f .app_pid 

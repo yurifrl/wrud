@@ -1,0 +1,7 @@
+logs/
+.build/
+.swiftpm/
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
+.app_pid

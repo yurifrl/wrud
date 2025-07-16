@@ -31,6 +31,7 @@ Key | Type | Default | Description
 `logFile` | string | `log.md` | Absolute or relative path for Markdown log
 `hotKey` | string | `cmd+shift+1` | Global shortcut to open palette
 `closeOnBlur` | bool | true | Close palette when it loses focus
+`showOnStart` | bool | true | Open palette immediately on app launch
 
 ## How it works
 
