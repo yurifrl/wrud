@@ -22,18 +22,18 @@ task stop
 
 ## Configuration (`config.json`)
 
-Key | Type | Default | Description
---- | ---- | ------- | -----------
+Key                   | Type   | Default       | Description
+----------------------|--------|---------------|----------------------------------------------
 `offsetX` / `offsetY` | number | 40 / centered | Palette window position
-`width` / `height` | number | 600 / 60 | Palette size
-`startSelected` | bool | true | Place cursor in field when palette appears
-`intervalMinutes` | int | 30 | Minutes between automatic prompts
-`logFile` | string | `log.md` | Absolute or relative path for Markdown log
-`hotKey` | string | `cmd+shift+1` | Global shortcut to open palette
-`closeOnBlur` | bool | true | Close palette when it loses focus
-`showOnStart` | bool | true | Open palette immediately on app launch
-`showDockIcon` | bool | false | Show app icon in Dock (false = menu bar only)
-`showMenuBarIcon` | bool | true | Display clickable icon in system menu bar
+`width` / `height`    | number | 600 / 60      | Palette size
+`startSelected`       | bool   | true          | Place cursor in field when palette appears
+`intervalMinutes`     | int    | 30            | Minutes between automatic prompts
+`logFile`             | string | `log.md`      | Absolute or relative path for Markdown log
+`hotKey`              | string | `cmd+shift+1` | Global shortcut to open palette
+`closeOnBlur`         | bool   | true          | Close palette when it loses focus
+`showOnStart`         | bool   | true          | Open palette immediately on app launch
+`showDockIcon`        | bool   | false         | Show app icon in Dock (false = menu bar only)
+`showMenuBarIcon`     | bool   | true          | Display clickable icon in system menu bar
 
 ## How it works
 
