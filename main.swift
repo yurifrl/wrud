@@ -152,7 +152,7 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         let width = cfg.width ?? 600
         let height = cfg.height ?? 60
         let xPos = cfg.offsetX ?? 40
-        let yPos = cfg.offsetY ?? (screen.height - height) / 2
+        let yPos = cfg.offsetY ?? 40  // bottom-left alignment by default
         let frame = NSRect(x: xPos, y: yPos, width: width, height: height)
 
         class PaletteWindow: NSWindow {
