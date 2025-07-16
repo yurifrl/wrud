@@ -16,6 +16,7 @@ struct Config: Decodable {
     var closeOnBlur: Bool? = nil // if true, window closes when it loses focus
     var showOnStart: Bool? = nil  // open palette immediately on launch
     var showDockIcon: Bool? = nil // show icon in Dock (default false)
+    var showMenuBarIcon: Bool? = nil // show an icon in macOS menu bar
 }
 
 func loadConfig() -> Config {
@@ -141,6 +142,32 @@ if config.showDockIcon ?? false {
     app.setActivationPolicy(.accessory) // menu bar only
 }
 
+// MARK: - Status Bar Item
+
+final class StatusBarController: NSObject {
+    private var item: NSStatusItem?
+
+    func setup() {
+        guard config.showMenuBarIcon ?? true else { return }
+
+        let statusBar = NSStatusBar.system
+        item = statusBar.statusItem(withLength: NSStatusItem.variableLength)
+
+        if let button = item?.button {
+            button.title = "▢" // simple icon
+            button.action = #selector(clicked)
+            button.target = self
+        }
+    }
+
+    @objc private func clicked() {
+        showPalette()
+    }
+}
+
+let statusBarController = StatusBarController()
+statusBarController.setup()
+
 final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private let onSubmit: (String) -> Void
     private let cfg: Config
@@ -152,7 +179,7 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         let width = cfg.width ?? 600
         let height = cfg.height ?? 60
         let xPos = cfg.offsetX ?? 40
-        let yPos = cfg.offsetY ?? 40  // bottom-left alignment by default
+        let yPos = cfg.offsetY ?? (screen.height - height) / 2
         let frame = NSRect(x: xPos, y: yPos, width: width, height: height)
 
         class PaletteWindow: NSWindow {

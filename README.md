@@ -33,6 +33,7 @@ Key | Type | Default | Description
 `closeOnBlur` | bool | true | Close palette when it loses focus
 `showOnStart` | bool | true | Open palette immediately on app launch
 `showDockIcon` | bool | false | Show app icon in Dock (false = menu bar only)
+`showMenuBarIcon` | bool | true | Display clickable icon in system menu bar
 
 ## How it works
 

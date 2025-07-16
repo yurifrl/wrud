@@ -9,5 +9,6 @@
   "hotKey": "cmd+shift+1",
   "closeOnBlur": true,
   "showOnStart": true,
-  "showDockIcon": false
+  "showDockIcon": false,
+  "showMenuBarIcon": true
 } 
