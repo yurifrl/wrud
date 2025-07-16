@@ -1,0 +1,9 @@
+{
+  "offsetX": 100,
+  "offsetY": null,
+  "width": 600,
+  "height": 60,
+  "startSelected": true,
+  "intervalMinutes": 30,
+  "logFile": "log2.md"
+} 
