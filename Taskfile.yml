@@ -1,0 +1,33 @@
+version: '3'
+
+tasks:
+  run:
+    desc: "Build and run the app in background, logs to logs/app.log"
+    cmds:
+      - mkdir -p logs
+      - nohup swift main.swift > logs/app.log 2>&1 & echo $! > .app_pid
+    silent: true
+
+  stop:
+    desc: "Stop the running app if it's active"
+    cmds:
+      - |
+        if [ -f .app_pid ]; then
+          kill $(cat .app_pid) && rm .app_pid && echo "Stopped." || echo "Failed to stop."
+        else
+          echo "Not running."
+        fi
+
+  status:
+    desc: "Show running status"
+    cmds:
+      - |
+        if [ -f .app_pid ]; then
+          if ps -p $(cat .app_pid) > /dev/null; then
+            echo "Running (pid $(cat .app_pid))"
+          else
+            echo "Stale PID file. Removing." && rm .app_pid
+          fi
+        else
+          echo "Not running."
+        fi 

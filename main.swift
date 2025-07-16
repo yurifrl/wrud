@@ -65,29 +65,7 @@ func logError(_ message: String) {
     print("ERROR: \(message)")
 }
 
-func extractTags(from text: String) -> Set<String> {
-    let regex = try! NSRegularExpression(pattern: "#([A-Za-z_-]+)")
-    let ns = text as NSString
-    let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
-    var set = Set<String>()
-    for m in matches where m.numberOfRanges > 1 {
-        set.insert("#" + ns.substring(with: m.range(at: 1)))
-    }
-    return set
-}
-
-var tagCache: Set<String> = {
-    (try? String(contentsOf: logURL, encoding: .utf8)).map { extractTags(from: $0) } ?? []
-}()
-
-func refreshTags() {
-    do {
-        let txt = try String(contentsOf: logURL, encoding: .utf8)
-        tagCache = extractTags(from: txt)
-    } catch {
-        logError("Failed to refresh tags: \(error)")
-    }
-}
+// Remove extractTags, tagCache, refreshTags
 
 // MARK: - HotKey Parsing & Registration
 
@@ -245,13 +223,7 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         }
     }
 
-    func control(_ control: NSControl, textView: NSTextView, completions words: [String], forPartialWordRange charRange: NSRange, indexOfSelectedItem index: UnsafeMutablePointer<Int>) -> [String] {
-        let ns = textView.string as NSString
-        guard charRange.location > 0 else { return [] }
-        guard ns.character(at: charRange.location - 1) == 35 else { return [] }
-        let partial = ns.substring(with: charRange)
-        return tagCache.filter { $0.hasPrefix("#" + partial) }.sorted()
-    }
+    // Removed autocomplete delegate methods
 }
 
 // MARK: - Logging
@@ -306,7 +278,7 @@ func appendEntry(_ text: String) {
         exit(1)
     }
 
-    refreshTags()
+    // removed refreshTags call
 }
 
 // MARK: - Scheduler
@@ -314,6 +286,13 @@ func appendEntry(_ text: String) {
 var activeControllers: [PaletteWindowController] = []
 
 func showPalette() {
+    // If a palette is already open, just focus it and return
+    if let existing = activeControllers.last?.window {
+        existing.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        return
+    }
+
     var ctrl: PaletteWindowController? = nil
     ctrl = PaletteWindowController(cfg: config) { text in
         appendEntry(text)
