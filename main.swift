@@ -17,6 +17,10 @@ struct Config: Decodable {
     var showOnStart: Bool? = nil  // open palette immediately on launch
     var showDockIcon: Bool? = nil // show icon in Dock (default false)
     var showMenuBarIcon: Bool? = nil // show an icon in macOS menu bar
+    var updateURL: String? = nil // optional URL to releases/latest
+    var cron: String? = nil // e.g. "*/30 * * * *" or "0,30 * * * *"
+    var showInsideClock: Bool? = nil
+    var showOutsideClock: Bool? = nil
 }
 
 func loadConfig() -> Config {
@@ -33,7 +37,21 @@ func loadConfig() -> Config {
         }
     }
 
-    // 2. "config.json" in current directory
+    // 2. ~/.config/wrud.json
+    let homeConfig = fm.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config")
+        .appendingPathComponent("wrud.json")
+    if fm.fileExists(atPath: homeConfig.path) {
+        do {
+            let data = try Data(contentsOf: homeConfig)
+            return try JSONDecoder().decode(Config.self, from: data)
+        } catch {
+            logError("Failed to load ~/.config/wrud.json: \(error)")
+            exit(1)
+        }
+    }
+
+    // 3. "config.json" in current directory (dev convenience)
     let url = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("config.json")
     if fm.fileExists(atPath: url.path) {
         do {
@@ -53,15 +71,35 @@ func loadConfig() -> Config {
 
 let config = loadConfig()
 
+var isPaused: Bool = false
+
+func expandPath(_ path: String) -> URL {
+    if path.hasPrefix("~") {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let expanded = path.replacingOccurrences(of: "~", with: home)
+        return URL(fileURLWithPath: expanded)
+    }
+    if path.hasPrefix("/") {
+        return URL(fileURLWithPath: path)
+    }
+    return URL(fileURLWithPath: path)
+}
+
 let logURL: URL = {
     if let path = config.logFile {
-        if path.hasPrefix("/") {
-            return URL(fileURLWithPath: path)
-        } else {
-            return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(path)
-        }
+        return expandPath(path)
     }
-    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("log.md")
+    let appSupport = try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask,
+                                                  appropriateFor: nil,
+                                                  create: true)
+        .appendingPathComponent("wrud")
+    if let dir = appSupport {
+        return dir.appendingPathComponent("log.md")
+    }
+    // Fallback to home directory if App Support resolution fails
+    return FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("wrud-log.md")
 }()
 
 func logError(_ message: String) {
@@ -69,6 +107,13 @@ func logError(_ message: String) {
 }
 
 // Remove extractTags, tagCache, refreshTags
+
+func formatMMSS(_ interval: TimeInterval) -> String {
+    let total = Int(max(0, interval))
+    let minutes = total / 60
+    let seconds = total % 60
+    return String(format: "%02d:%02d", minutes, seconds)
+}
 
 // MARK: - HotKey Parsing & Registration
 
@@ -115,7 +160,7 @@ func registerGlobalHotKey() {
     }
 
     var hotKeyRef: EventHotKeyRef?
-    var hotKeyID = EventHotKeyID(signature: OSType(0x7768646b), id: 1) // 'whdk'
+    let hotKeyID = EventHotKeyID(signature: OSType(0x7768646b), id: 1) // 'whdk'
 
     let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetEventDispatcherTarget(), 0, &hotKeyRef)
     if status != noErr {
@@ -128,6 +173,7 @@ func registerGlobalHotKey() {
         GetEventParameter(evt, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout.size(ofValue: hkID), nil, &hkID)
         if hkID.id == 1 {
             showPalette()
+            statusBarController.updateMenuUI()
         }
         return noErr
     }, 1, &spec, nil, nil)
@@ -146,6 +192,12 @@ if config.showDockIcon ?? false {
 
 final class StatusBarController: NSObject {
     private var item: NSStatusItem?
+    private var statusMenu: NSMenu?
+    private var statusItem: NSMenuItem?
+    private var toggleItem: NSMenuItem?
+    private var startAtLoginItem: NSMenuItem?
+    private var nextItem: NSMenuItem?
+    private var countdownTimer: Timer?
 
     func setup() {
         guard config.showMenuBarIcon ?? true else { return }
@@ -154,14 +206,110 @@ final class StatusBarController: NSObject {
         item = statusBar.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = item?.button {
-            button.title = "▢" // simple icon
-            button.action = #selector(clicked)
-            button.target = self
+            button.title = "🕒"
         }
+
+        buildMenu()
+        updateMenuUI()
+        startCountdownUpdates()
     }
 
-    @objc private func clicked() {
+    private func buildMenu() {
+        let menu = NSMenu()
+
+        let status = NSMenuItem(title: "Running", action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        self.statusItem = status
+        menu.addItem(status)
+
+        let next = NSMenuItem(title: "Next: —", action: nil, keyEquivalent: "")
+        next.isEnabled = false
+        self.nextItem = next
+        menu.addItem(next)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let showNow = NSMenuItem(title: "Show Now", action: #selector(showNowAction), keyEquivalent: "s")
+        showNow.target = self
+        menu.addItem(showNow)
+
+        let toggle = NSMenuItem(title: "Pause", action: #selector(togglePauseAction), keyEquivalent: "p")
+        toggle.target = self
+        self.toggleItem = toggle
+        menu.addItem(toggle)
+
+        let startAtLogin = NSMenuItem(title: "Start at Login", action: #selector(toggleStartAtLoginAction), keyEquivalent: "l")
+        startAtLogin.target = self
+        self.startAtLoginItem = startAtLogin
+        menu.addItem(startAtLogin)
+
+        if config.updateURL != nil {
+            let update = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction), keyEquivalent: "u")
+            update.target = self
+            menu.addItem(update)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        let quit = NSMenuItem(title: "Quit", action: #selector(quitAction), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+
+        statusMenu = menu
+        item?.menu = menu
+    }
+
+    func updateMenuUI() {
+        statusItem?.title = isPaused ? "Paused" : "Running"
+        toggleItem?.title = isPaused ? "Resume" : "Pause"
+        let remaining = max(0, schedulerTimer?.fireDate.timeIntervalSinceNow ?? 0)
+        let mmss = formatMMSS(remaining)
+        if let button = item?.button {
+            let showOutside = config.showOutsideClock ?? false
+            button.title = isPaused ? "🕒⏸" : (showOutside ? "🕒 \(mmss)" : "🕒")
+        }
+        if let fireDate = schedulerTimer?.fireDate {
+            let timeFormatter = DateFormatter(); timeFormatter.dateFormat = "HH:mm"
+            let at = timeFormatter.string(from: fireDate)
+            nextItem?.title = isPaused ? "Next: paused" : "Next: \(at) (\(mmss))"
+        } else {
+            nextItem?.title = isPaused ? "Next: paused" : "Next: —"
+        }
+        startAtLoginItem?.state = isStartAtLoginEnabled() ? .on : .off
+    }
+
+    private func startCountdownUpdates() {
+        countdownTimer?.invalidate()
+        countdownTimer = Timer.scheduledTimer(timeInterval: 1.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
+        RunLoop.main.add(countdownTimer!, forMode: .common)
+    }
+
+    @objc private func tick() {
+        updateMenuUI()
+    }
+
+    @objc private func showNowAction() {
         showPalette()
+    }
+
+    @objc private func togglePauseAction() {
+        togglePause()
+        updateMenuUI()
+    }
+
+    @objc private func toggleStartAtLoginAction() {
+        let enabled = isStartAtLoginEnabled()
+        setStartAtLogin(enabled: !enabled)
+        updateMenuUI()
+    }
+
+    @objc private func checkForUpdatesAction() {
+        guard let urlString = config.updateURL, let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func quitAction() {
+        NSApp.terminate(nil)
     }
 }
 
@@ -171,16 +319,19 @@ statusBarController.setup()
 final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private let onSubmit: (String) -> Void
     private let cfg: Config
+    private var globalClickMonitor: Any?
 
     init(cfg: Config, onSubmit: @escaping (String) -> Void) {
         self.onSubmit = onSubmit
         self.cfg = cfg
-        let screen = NSScreen.main!.frame
+        let screenFrame: NSRect = (NSScreen.main ?? NSScreen.screens.first ?? NSScreen.screens[0]).visibleFrame
         let width = cfg.width ?? 600
         let height = cfg.height ?? 60
-        let xPos = cfg.offsetX ?? 40
-        let yPos = cfg.offsetY ?? (screen.height - height) / 2
-        let frame = NSRect(x: xPos, y: yPos, width: width, height: height)
+        let centerX = screenFrame.midX - (width / 2)
+        let centerY = screenFrame.midY - (height / 2)
+        let deltaX: CGFloat = cfg.offsetX ?? 0
+        let deltaY: CGFloat = cfg.offsetY ?? 0
+        let frame = NSRect(x: centerX + deltaX, y: centerY + deltaY, width: width, height: height)
 
         class PaletteWindow: NSWindow {
             override var canBecomeKey: Bool { true }
@@ -215,15 +366,24 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         textField.delegate = self
         window.contentView?.addSubview(textField)
 
-        if cfg.startSelected ?? false {
+        if cfg.startSelected ?? true {
             NSApplication.shared.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(textField)
+            DispatchQueue.main.async {
+                window.makeFirstResponder(textField)
+                textField.becomeFirstResponder()
+            }
         } else {
             window.orderFrontRegardless()
         }
 
         window.delegate = self
+
+        if cfg.closeOnBlur ?? true {
+            globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+                self?.window?.close()
+            }
+        }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -238,6 +398,10 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
 
     func windowWillClose(_ notification: Notification) {
         activeControllers.removeAll { $0 === self }
+        if let monitor = globalClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalClickMonitor = nil
+        }
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -271,25 +435,17 @@ func appendEntry(_ text: String) {
         if !FileManager.default.fileExists(atPath: dir.path) {
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
-            } catch {
-                logError("Failed to create directory: \(error)")
-                exit(1)
-            }
+            } catch { logError("Failed to create directory: \(error)") }
         }
         do {
             try "".write(to: logURL, atomically: true, encoding: .utf8)
-        } catch {
-            logError("Failed to create log file: \(error)")
-            exit(1)
-        }
+        } catch { logError("Failed to create log file: \(error)") }
     }
 
     var content = ""
     do {
         content = try String(contentsOf: logURL, encoding: .utf8)
-    } catch {
-        logError("Failed to read existing log: \(error)")
-    }
+    } catch { logError("Failed to read existing log: \(error)") }
 
     let dayFormatter = DateFormatter(); dayFormatter.dateFormat = "yyyy-MM-dd"
     let dayString = dayFormatter.string(from: Date())
@@ -306,10 +462,7 @@ func appendEntry(_ text: String) {
 
     do {
         try content.write(to: logURL, atomically: true, encoding: .utf8)
-    } catch {
-        logError("Failed to write log: \(error)")
-        exit(1)
-    }
+    } catch { logError("Failed to write log: \(error)") }
 
     // removed refreshTags call
 }
@@ -340,7 +493,28 @@ func showPalette() {
     }
 }
 
-func nextScheduledDate(interval: Int, from date: Date = Date()) -> Date {
+func nextScheduledDate(from date: Date = Date()) -> Date {
+    if let cron = config.cron, isThirtyMinuteCron(cron) {
+        return nextThirtyMinuteAligned(from: date)
+    }
+    let interval = config.intervalMinutes ?? 30
+    return nextIntervalAligned(interval: interval, from: date)
+}
+
+func isThirtyMinuteCron(_ expr: String) -> Bool {
+    let trimmed = expr.trimmingCharacters(in: .whitespaces)
+    return trimmed == "*/30 * * * *" || trimmed == "0,30 * * * *" || trimmed == "0 */1 * * *" // treat hourly as 0 past hour
+}
+
+func nextThirtyMinuteAligned(from date: Date) -> Date {
+    let calendar = Calendar.current
+    var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let minute = comps.minute ?? 0
+    let add = (minute < 30) ? (30 - minute) : (60 - minute)
+    return calendar.date(byAdding: .minute, value: add, to: date)!.withZeroSeconds()
+}
+
+func nextIntervalAligned(interval: Int, from date: Date) -> Date {
     let calendar = Calendar.current
     var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
     let minute = comps.minute ?? 0
@@ -350,15 +524,91 @@ func nextScheduledDate(interval: Int, from date: Date = Date()) -> Date {
     return calendar.date(from: comps)!
 }
 
-let intervalMinutes = config.intervalMinutes ?? 30
-let firstFire = nextScheduledDate(interval: intervalMinutes)
-let timer = Timer(fireAt: firstFire,
-                  interval: TimeInterval(intervalMinutes * 60),
+extension Date {
+    func withZeroSeconds() -> Date {
+        let calendar = Calendar.current
+        var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: self)
+        comps.second = 0
+        return calendar.date(from: comps)!
+    }
+}
+
+var schedulerTimer: Timer?
+var lastFireDate: Date?
+
+func startScheduler() {
+    guard schedulerTimer == nil else { return }
+    let firstFire = nextScheduledDate()
+    let t = Timer(fireAt: firstFire,
+                  interval: TimeInterval((config.intervalMinutes ?? 30) * 60),
                   target: BlockOperation { showPalette() },
                   selector: #selector(Operation.main),
                   userInfo: nil,
                   repeats: true)
-RunLoop.main.add(timer, forMode: .common)
+    lastFireDate = firstFire
+    schedulerTimer = t
+    RunLoop.main.add(t, forMode: .common)
+}
+
+func stopScheduler() {
+    schedulerTimer?.invalidate()
+    schedulerTimer = nil
+}
+
+func togglePause() {
+    isPaused.toggle()
+    if isPaused {
+        stopScheduler()
+    } else {
+        startScheduler()
+    }
+}
+
+startScheduler()
+
+// MARK: - Start at Login (LaunchAgent)
+
+func agentPlistURL() -> URL {
+    let bundleId = "dev.local.wrud"
+    let launchAgents = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents")
+    return launchAgents.appendingPathComponent("\(bundleId).plist")
+}
+
+func isStartAtLoginEnabled() -> Bool {
+    FileManager.default.fileExists(atPath: agentPlistURL().path)
+}
+
+func setStartAtLogin(enabled: Bool) {
+    let fm = FileManager.default
+    let plistURL = agentPlistURL()
+    let launchAgentsDir = plistURL.deletingLastPathComponent()
+    do { try fm.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true) } catch {}
+
+    if enabled {
+        let exePath = Bundle.main.bundlePath
+        let dict: [String: Any] = [
+            "Label": "dev.local.wrud",
+            "ProgramArguments": [exePath + "/Contents/MacOS/wrud"],
+            "RunAtLoad": true,
+            "KeepAlive": false
+        ]
+        if let data = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0) {
+            try? data.write(to: plistURL)
+            _ = runLaunchCtl(["load", plistURL.path])
+        }
+    } else {
+        _ = runLaunchCtl(["unload", plistURL.path])
+        try? fm.removeItem(at: plistURL)
+    }
+}
+
+@discardableResult
+func runLaunchCtl(_ args: [String]) -> Int32 {
+    let task = Process()
+    task.launchPath = "/bin/launchctl"
+    task.arguments = args
+    do { try task.run(); task.waitUntilExit(); return task.terminationStatus } catch { return -1 }
+}
 
 // Register global hot key
 registerGlobalHotKey()

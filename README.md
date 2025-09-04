@@ -34,6 +34,7 @@ Key                   | Type   | Default       | Description
 `showOnStart`         | bool   | true          | Open palette immediately on app launch
 `showDockIcon`        | bool   | false         | Show app icon in Dock (false = menu bar only)
 `showMenuBarIcon`     | bool   | true          | Display clickable icon in system menu bar
+`updateURL`           | string | -             | Optional releases URL for Check for Updates…
 
 ## How it works
 
@@ -43,3 +44,28 @@ Key                   | Type   | Default       | Description
 
 ---
 Written in plain Swift, no third-party dependencies. 
+
+## Build an installable .app
+
+Requires [go-task](https://taskfile.dev) for convenience tasks.
+
+```bash
+# 1) Build an app bundle
+task build-app
+
+# 2) Install to ~/Applications
+task install-app
+
+# 3) (optional) Create a DMG for distribution
+task package-dmg
+```
+
+After installation, launch from Spotlight: type "wrud".
+
+## Updates
+
+Add `updateURL` in `config.json` (e.g., a GitHub releases page). Use the menubar “Check for Updates…” to open it.
+
+## Start at Login
+
+Use the menubar toggle “Start at Login”. It manages a user LaunchAgent at `~/Library/LaunchAgents/dev.local.wrud.plist`.

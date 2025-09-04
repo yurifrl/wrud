@@ -5,3 +5,4 @@ logs/
 *.xcworkspace/
 .DS_Store
 .app_pid
+wrud.app/

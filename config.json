@@ -5,10 +5,11 @@
   "height": 60,
   "startSelected": true,
   "intervalMinutes": 30,
-  "logFile": "/Users/nsx000542/Obsidian/daily.md",
+  "logFile": "/Users/yuri/Obsidian/WIP.md",
   "hotKey": "cmd+shift+1",
   "closeOnBlur": true,
   "showOnStart": true,
   "showDockIcon": false,
-  "showMenuBarIcon": true
+  "showMenuBarIcon": true,
+  "cron": "0,30 * * * *"
 } 

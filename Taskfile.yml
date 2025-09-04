@@ -66,3 +66,60 @@ tasks:
           echo "No stray processes found."
         fi
       - rm -f .app_pid 
+
+  build-app:
+    desc: "Build a .app bundle (minimal)"
+    cmds:
+      - |
+        bash -euo pipefail -c '
+        APP_NAME="wrud"
+        APP_DIR="${APP_NAME}.app"
+        CONTENTS="$APP_DIR/Contents"
+        MACOS="$CONTENTS/MacOS"
+        RESOURCES="$CONTENTS/Resources"
+        mkdir -p "$MACOS" "$RESOURCES"
+        cat > "$CONTENTS/Info.plist" <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>CFBundleName</key><string>wrud</string>
+          <key>CFBundleIdentifier</key><string>dev.local.wrud</string>
+          <key>CFBundleExecutable</key><string>wrud</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>LSMinimumSystemVersion</key><string>13.0</string>
+          <key>LSBackgroundOnly</key><false/>
+          <key>LSUIElement</key><true/>
+        </dict>
+        </plist>
+        EOF
+        swiftc -O main.swift -framework AppKit -framework Carbon -o "$MACOS/wrud"
+        echo "Built $APP_DIR"
+        '
+
+  install-app:
+    desc: "Install the app to ~/Applications"
+    cmds:
+      - |
+        bash -euo pipefail -c '
+        APP_NAME="wrud"
+        APP_DIR="${APP_NAME}.app"
+        DEST="$HOME/Applications/$APP_DIR"
+        mkdir -p "$HOME/Applications"
+        rm -rf "$DEST"
+        cp -R "$APP_DIR" "$DEST"
+        echo "Installed to $DEST"
+        '
+
+  package-dmg:
+    desc: "Create a dmg (requires create-dmg or hdiutil)"
+    cmds:
+      - |
+        bash -euo pipefail -c '
+        APP_NAME="wrud"
+        APP_DIR="${APP_NAME}.app"
+        DMG_NAME="${APP_NAME}.dmg"
+        rm -f "$DMG_NAME"
+        hdiutil create -volname "$APP_NAME" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG_NAME"
+        echo "Created $DMG_NAME"
+        '
