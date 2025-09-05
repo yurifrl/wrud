@@ -320,6 +320,7 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
     private let onSubmit: (String) -> Void
     private let cfg: Config
     private var globalClickMonitor: Any?
+    private weak var inputField: NSTextField?
 
     init(cfg: Config, onSubmit: @escaping (String) -> Void) {
         self.onSubmit = onSubmit
@@ -346,7 +347,8 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         window.isOpaque = false
         window.backgroundColor = NSColor(calibratedWhite: 0.1, alpha: 0.9)
         window.hasShadow = true
-        window.isMovableByWindowBackground = true
+        window.isMovable = false
+        window.isMovableByWindowBackground = false
         window.titleVisibility = .hidden
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.cornerRadius = 10
@@ -362,9 +364,10 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         textField.focusRingType = .none
         textField.font = .systemFont(ofSize: 20, weight: .medium)
         textField.textColor = .white
-        textField.placeholderString = "Search for apps and commands…"
+        textField.placeholderString = "Add item"
         textField.delegate = self
         window.contentView?.addSubview(textField)
+        self.inputField = textField
 
         if cfg.startSelected ?? true {
             NSApplication.shared.activate(ignoringOtherApps: true)
@@ -412,6 +415,14 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         case #selector(NSResponder.insertNewline(_:)):
             if let tf = control as? NSTextField {
                 onSubmit(tf.stringValue)
+                let isShiftReturn = NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+                if isShiftReturn {
+                    tf.stringValue = ""
+                    DispatchQueue.main.async {
+                        tf.becomeFirstResponder()
+                    }
+                    return true
+                }
             }
             self.window?.close()
             return true
@@ -508,7 +519,7 @@ func isThirtyMinuteCron(_ expr: String) -> Bool {
 
 func nextThirtyMinuteAligned(from date: Date) -> Date {
     let calendar = Calendar.current
-    var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
     let minute = comps.minute ?? 0
     let add = (minute < 30) ? (30 - minute) : (60 - minute)
     return calendar.date(byAdding: .minute, value: add, to: date)!.withZeroSeconds()
