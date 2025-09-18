@@ -4,27 +4,8 @@ tasks:
   run:
     desc: "Build and run the app in background, logs to logs/app.log"
     cmds:
-      - |
-        bash -c '
-        mkdir -p logs
-        # kill existing running instances
-        if [ -f .app_pid ]; then
-          pid=$(cat .app_pid | tr -d "[:space:]")
-          if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
-            echo "Stopping existing instance (pid $pid)"
-            kill $pid || true
-            sleep 1
-          fi
-        fi
-        pids=$(pgrep -f "swift main.swift" || true)
-        if [ -n "$pids" ]; then
-          echo "Killing stray processes: $pids"
-          kill $pids || true
-          sleep 1
-        fi
-        # start new instance
-        nohup swift main.swift > logs/app.log 2>&1 & echo $! > .app_pid && echo "Started wryd (pid $(cat .app_pid))"
-        '
+      - swift main.swift
+    interactive: true
     silent: false
 
   stop:

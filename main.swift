@@ -4,6 +4,20 @@ import Carbon
 
 // MARK: - Configuration
 
+struct FileConfig: Decodable {
+    var promptMatch: String? = nil // regex to match prompt
+    var filePositionMatch: String? = nil // regex to find position in file
+    var insertBehavior: String? = nil // "append" or "prepend"
+    var exitBehaviour: String? = nil // "finish" or "continue"
+    var file: String? = nil // path to file
+    var format: String? = nil // format string with $prompt placeholder
+}
+
+struct FilesDefault: Decodable {
+    var insertBehaviour: String? = nil // "date", "prepend", or "append"
+    var file: String? = nil // default file path
+}
+
 struct Config: Decodable {
     var offsetX: CGFloat? = nil
     var offsetY: CGFloat? = nil
@@ -18,9 +32,10 @@ struct Config: Decodable {
     var showDockIcon: Bool? = nil // show icon in Dock (default false)
     var showMenuBarIcon: Bool? = nil // show an icon in macOS menu bar
     var updateURL: String? = nil // optional URL to releases/latest
-    var cron: String? = nil // e.g. "*/30 * * * *" or "0,30 * * * *"
     var showInsideClock: Bool? = nil
     var showOutsideClock: Bool? = nil
+    var filesDefault: FilesDefault? = nil
+    var files: [String: FileConfig]? = nil
 }
 
 func loadConfig() -> Config {
@@ -86,6 +101,11 @@ func expandPath(_ path: String) -> URL {
 }
 
 let logURL: URL = {
+    // Check if filesDefault is configured
+    if let filesDefault = config.filesDefault, let path = filesDefault.file {
+        return expandPath(path)
+    }
+    // Fallback to logFile config for backward compatibility
     if let path = config.logFile {
         return expandPath(path)
     }
@@ -316,6 +336,29 @@ final class StatusBarController: NSObject {
 let statusBarController = StatusBarController()
 statusBarController.setup()
 
+// Custom text field to handle control key shortcuts locally
+final class CommandTextField: NSTextField {
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control), let chars = event.charactersIgnoringModifiers {
+            switch chars {
+            case "a":
+                NSApp.sendAction(#selector(NSTextView.moveToBeginningOfLine(_:)), to: nil, from: self)
+                return
+            case "e", "r":
+                // Support both Ctrl+E and requested Ctrl+R for end-of-line
+                NSApp.sendAction(#selector(NSTextView.moveToEndOfLine(_:)), to: nil, from: self)
+                return
+            case "w":
+                NSApp.sendAction(#selector(NSTextView.deleteWordBackward(_:)), to: nil, from: self)
+                return
+            default:
+                break
+            }
+        }
+        super.keyDown(with: event)
+    }
+}
+
 final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private let onSubmit: (String) -> Void
     private let cfg: Config
@@ -355,7 +398,7 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
 
         super.init(window: window)
 
-        let textField = NSTextField(frame: NSRect(x: 16,
+        let textField = CommandTextField(frame: NSRect(x: 16,
                                                   y: (height - 30) / 2,
                                                   width: width - 32,
                                                   height: 30))
@@ -366,6 +409,12 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         textField.textColor = .white
         textField.placeholderString = "Add item"
         textField.delegate = self
+        if let cell = textField.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = true
+            cell.usesSingleLineMode = true
+            cell.lineBreakMode = .byClipping
+        }
         window.contentView?.addSubview(textField)
         self.inputField = textField
 
@@ -412,6 +461,15 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         case #selector(NSResponder.cancelOperation(_:)):
             self.window?.close()
             return true
+        case #selector(NSTextView.insertLineBreak(_:)):
+            // Treat Shift+Enter as submit-and-continue
+            if let tf = control as? NSTextField {
+                onSubmit(tf.stringValue)
+                tf.stringValue = ""
+                DispatchQueue.main.async { tf.becomeFirstResponder() }
+                return true
+            }
+            return false
         case #selector(NSResponder.insertNewline(_:)):
             if let tf = control as? NSTextField {
                 onSubmit(tf.stringValue)
@@ -440,42 +498,192 @@ func appendEntry(_ text: String) {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
 
-    // Ensure log file and its directory exist
-    if !FileManager.default.fileExists(atPath: logURL.path) {
-        let dir = logURL.deletingLastPathComponent()
+    // Process files in order
+    if let files = config.files {
+        let sortedFiles = files.sorted { (first, second) in
+            let firstOrder = Int(first.key) ?? 999
+            let secondOrder = Int(second.key) ?? 999
+            return firstOrder < secondOrder
+        }
+
+        for (_, fileConfig) in sortedFiles {
+            if let promptRegex = fileConfig.promptMatch {
+                do {
+                    let regex = try NSRegularExpression(pattern: promptRegex)
+                    let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+                    if regex.firstMatch(in: trimmed, options: [], range: range) != nil {
+                        // Found a match, write to this file
+                        if let filePath = fileConfig.file {
+                            writeToFile(text: trimmed, config: fileConfig, filePath: filePath)
+                            print("✓ Added to \(URL(fileURLWithPath: filePath).lastPathComponent)")
+                            // Check exit behavior
+                            if fileConfig.exitBehaviour != "continue" {
+                                return // Default is "finish"
+                            }
+                        }
+                    }
+                } catch {
+                    logError("Invalid regex pattern: \(promptRegex)")
+                }
+            }
+        }
+    }
+
+    // Fall back to filesDefault if no matches
+    if let filesDefault = config.filesDefault {
+        let defaultConfig = FileConfig()
+        writeToFile(text: trimmed, config: defaultConfig, filePath: filesDefault.file ?? logURL.path, insertBehaviour: filesDefault.insertBehaviour)
+    } else {
+        // Legacy behavior - write to logURL
+        writeToFile(text: trimmed, config: FileConfig(), filePath: logURL.path, insertBehaviour: "date")
+    }
+}
+
+func writeToFile(text: String, config: FileConfig, filePath: String, insertBehaviour: String? = nil) {
+    let fileURL = expandPath(filePath)
+    let behavior = insertBehaviour ?? config.insertBehavior ?? "date"
+
+    // Ensure file and its directory exist
+    if !FileManager.default.fileExists(atPath: fileURL.path) {
+        let dir = fileURL.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: dir.path) {
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
             } catch { logError("Failed to create directory: \(error)") }
         }
         do {
-            try "".write(to: logURL, atomically: true, encoding: .utf8)
-        } catch { logError("Failed to create log file: \(error)") }
+            try "".write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch { logError("Failed to create file: \(error)") }
     }
 
     var content = ""
     do {
-        content = try String(contentsOf: logURL, encoding: .utf8)
-    } catch { logError("Failed to read existing log: \(error)") }
-
-    let dayFormatter = DateFormatter(); dayFormatter.dateFormat = "yyyy-MM-dd"
-    let dayString = dayFormatter.string(from: Date())
-
-    if !content.contains("# \(dayString)") {
-        if !content.hasSuffix("\n") { content += "\n" }
-        content += "# \(dayString)\n"
-    }
+        content = try String(contentsOf: fileURL, encoding: .utf8)
+    } catch { logError("Failed to read existing file: \(error)") }
 
     let timeFormatter = DateFormatter(); timeFormatter.dateFormat = "HH:mm"
     let timeString = timeFormatter.string(from: Date())
 
-    content += "- [ ] \(trimmed) \(timeString)\n"
+    var newEntry = ""
+    var insertionPoint = content.count
+
+    // Handle behavior and format
+    switch behavior {
+    case "date":
+        let dayFormatter = DateFormatter(); dayFormatter.dateFormat = "yyyy-MM-dd"
+        let dayString = dayFormatter.string(from: Date())
+
+        if !content.contains("# \(dayString)") {
+            if !content.hasSuffix("\n") { content += "\n" }
+            content += "# \(dayString)\n"
+        }
+        if let format = config.format {
+            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
+        } else {
+            newEntry = "- [ ] \(text) \(timeString)\n"
+        }
+        insertionPoint = content.count
+    case "prepend":
+        if let format = config.format {
+            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
+        } else {
+            newEntry = "\(text)\n"
+        }
+        insertionPoint = 0
+    case "append":
+        if let format = config.format {
+            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
+        } else {
+            newEntry = "\(text)\n"
+        }
+        insertionPoint = content.count
+    case "endoflist":
+        if let format = config.format {
+            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
+        } else {
+            newEntry = "\(text)\n"
+        }
+        // Handle file position matching for endoflist
+        if let positionRegex = config.filePositionMatch {
+            do {
+                let regex = try NSRegularExpression(pattern: positionRegex)
+                let range = NSRange(content.startIndex..<content.endIndex, in: content)
+                if let match = regex.firstMatch(in: content, options: [], range: range) {
+                    // Find end of the matched line and move to next line
+                    let matchEnd = match.range.location + match.range.length
+                    if let stringRange = Range(NSRange(location: matchEnd, length: 0), in: content) {
+                        let searchRange = stringRange.lowerBound..<content.endIndex
+                        if let newlineRange = content.range(of: "\n", range: searchRange) {
+                            var currentPos = newlineRange.upperBound
+                            var lastDashLineEnd: String.Index? = nil
+
+                            // Find consecutive lines starting with "-"
+                            while currentPos < content.endIndex {
+                                let remainingRange = currentPos..<content.endIndex
+                                if let nextNewline = content.range(of: "\n", range: remainingRange) {
+                                    let lineRange = currentPos..<nextNewline.lowerBound
+                                    let line = String(content[lineRange]).trimmingCharacters(in: .whitespaces)
+
+                                    if line.hasPrefix("- ") || line.hasPrefix("-\t") {
+                                        lastDashLineEnd = nextNewline.upperBound
+                                    } else if !line.isEmpty {
+                                        // Hit a non-empty, non-dash line, stop here
+                                        break
+                                    }
+                                    currentPos = nextNewline.upperBound
+                                } else {
+                                    // No more newlines, check the last line
+                                    let lineRange = currentPos..<content.endIndex
+                                    let line = String(content[lineRange]).trimmingCharacters(in: .whitespaces)
+                                    if line.hasPrefix("- ") || line.hasPrefix("-\t") {
+                                        lastDashLineEnd = content.endIndex
+                                    }
+                                    break
+                                }
+                            }
+
+                            if let dashEnd = lastDashLineEnd {
+                                insertionPoint = content.distance(from: content.startIndex, to: dashEnd)
+                            } else {
+                                // No dash lines found after the match, insert right after the match
+                                insertionPoint = content.distance(from: content.startIndex, to: newlineRange.upperBound)
+                            }
+                        } else {
+                            insertionPoint = content.count
+                        }
+                    }
+                } else {
+                    insertionPoint = content.count
+                }
+            } catch {
+                logError("Invalid file position regex: \(positionRegex)")
+                insertionPoint = content.count
+            }
+        } else {
+            insertionPoint = content.count
+        }
+    default:
+        if let format = config.format {
+            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
+        } else {
+            newEntry = "- [ ] \(text) \(timeString)\n"
+        }
+        insertionPoint = content.count
+    }
+
+    // Insert the new entry
+    if insertionPoint >= content.count {
+        content += newEntry
+    } else if insertionPoint <= 0 {
+        content = newEntry + content
+    } else {
+        let index = content.index(content.startIndex, offsetBy: insertionPoint)
+        content.insert(contentsOf: newEntry, at: index)
+    }
 
     do {
-        try content.write(to: logURL, atomically: true, encoding: .utf8)
-    } catch { logError("Failed to write log: \(error)") }
-
-    // removed refreshTags call
+        try content.write(to: fileURL, atomically: true, encoding: .utf8)
+    } catch { logError("Failed to write to file: \(error)") }
 }
 
 // MARK: - Scheduler
@@ -505,35 +713,35 @@ func showPalette() {
 }
 
 func nextScheduledDate(from date: Date = Date()) -> Date {
-    if let cron = config.cron, isThirtyMinuteCron(cron) {
-        return nextThirtyMinuteAligned(from: date)
-    }
     let interval = config.intervalMinutes ?? 30
     return nextIntervalAligned(interval: interval, from: date)
 }
 
-func isThirtyMinuteCron(_ expr: String) -> Bool {
-    let trimmed = expr.trimmingCharacters(in: .whitespaces)
-    return trimmed == "*/30 * * * *" || trimmed == "0,30 * * * *" || trimmed == "0 */1 * * *" // treat hourly as 0 past hour
-}
-
-func nextThirtyMinuteAligned(from date: Date) -> Date {
-    let calendar = Calendar.current
-    let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
-    let minute = comps.minute ?? 0
-    let add = (minute < 30) ? (30 - minute) : (60 - minute)
-    return calendar.date(byAdding: .minute, value: add, to: date)!.withZeroSeconds()
-}
-
 func nextIntervalAligned(interval: Int, from date: Date) -> Date {
     let calendar = Calendar.current
-    var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
-    let minute = comps.minute ?? 0
-    let remainder = minute % interval
-    comps.minute! += remainder == 0 ? interval : (interval - remainder)
-    comps.second = 0
-    return calendar.date(from: comps)!
+    let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let currentMinute = comps.minute ?? 0
+
+    // Calculate next interval aligned with top of hour (0 minutes)
+    let nextMinute = ((currentMinute / interval) + 1) * interval
+
+    if nextMinute < 60 {
+        // Same hour
+        var newComps = comps
+        newComps.minute = nextMinute
+        newComps.second = 0
+        return calendar.date(from: newComps)!
+    } else {
+        // Next hour
+        let nextHour = calendar.date(byAdding: .hour, value: 1, to: date)!
+        var newComps = calendar.dateComponents([.year, .month, .day, .hour], from: nextHour)
+        newComps.minute = nextMinute - 60
+        newComps.second = 0
+        return calendar.date(from: newComps)!
+    }
 }
+
+
 
 extension Date {
     func withZeroSeconds() -> Date {
@@ -550,8 +758,9 @@ var lastFireDate: Date?
 func startScheduler() {
     guard schedulerTimer == nil else { return }
     let firstFire = nextScheduledDate()
+    let interval = config.intervalMinutes ?? 30
     let t = Timer(fireAt: firstFire,
-                  interval: TimeInterval((config.intervalMinutes ?? 30) * 60),
+                  interval: TimeInterval(interval * 60),
                   target: BlockOperation { showPalette() },
                   selector: #selector(Operation.main),
                   userInfo: nil,

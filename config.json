@@ -5,11 +5,23 @@
   "height": 60,
   "startSelected": true,
   "intervalMinutes": 30,
-  "logFile": "/Users/yuri/Obsidian/WIP.md",
   "hotKey": "cmd+shift+1",
   "closeOnBlur": true,
   "showOnStart": true,
   "showDockIcon": false,
   "showMenuBarIcon": true,
-  "cron": "0,30 * * * *"
-} 
+  "filesDefault": {
+    "insertBehaviour": "date",
+    "file": "/Users/yuri/Obsidian/WIP.md"
+  },
+  "files": {
+    "1": {
+      "promptMatch": ".*#task.*",
+      "filePositionMatch": "^- \\[",
+      "insertBehavior": "endoflist",
+      "exitBehaviour": "finish",
+      "file": "/Users/yuri/Obsidian/📝 Todo.md",
+      "format": "- [ ] $prompt"
+    }
+  }
+}
