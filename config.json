@@ -1,15 +1,24 @@
 {
   "offsetX": 40,
   "offsetY": 40,
-  "width": 600,
-  "height": 60,
+  "width": 800,
+  "height": 64,
   "startSelected": true,
   "intervalMinutes": 30,
-  "hotKey": "cmd+shift+1",
+  "hotKey": "cmd+shift+=",
   "closeOnBlur": true,
   "showOnStart": true,
   "showDockIcon": false,
   "showMenuBarIcon": true,
+  "theme": {
+    "backgroundColor": "#333333F2",
+    "borderColor": "#666666AA",
+    "borderWidth": 1.0,
+    "cornerRadius": 12,
+    "textColor": "#FFFFFF",
+    "placeholderColor": "#BBBBBB99",
+    "fontSize": 18
+  },
   "filesDefault": {
     "insertBehaviour": "date",
     "file": "/Users/yuri/Obsidian/WIP.md"

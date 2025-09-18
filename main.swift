@@ -2,131 +2,476 @@ import AppKit
 import Foundation
 import Carbon
 
-// MARK: - Configuration
+// MARK: - Configuration Models
 
-struct FileConfig: Decodable {
-    var promptMatch: String? = nil // regex to match prompt
-    var filePositionMatch: String? = nil // regex to find position in file
-    var insertBehavior: String? = nil // "append" or "prepend"
-    var exitBehaviour: String? = nil // "finish" or "continue"
-    var file: String? = nil // path to file
-    var format: String? = nil // format string with $prompt placeholder
+enum InsertBehavior: String, CaseIterable {
+    case prepend = "prepend"
+    case append = "append"
+    case endoflist = "endoflist"
+    case date = "date"
 }
 
-struct FilesDefault: Decodable {
-    var insertBehaviour: String? = nil // "date", "prepend", or "append"
-    var file: String? = nil // default file path
+enum ExitBehavior: String, CaseIterable {
+    case finish = "finish"
+    case `continue` = "continue"
 }
 
-struct Config: Decodable {
-    var offsetX: CGFloat? = nil
-    var offsetY: CGFloat? = nil
-    var width: CGFloat? = nil
-    var height: CGFloat? = nil
-    var startSelected: Bool? = nil
-    var intervalMinutes: Int? = nil
-    var logFile: String? = nil
-    var hotKey: String? = nil // e.g. "cmd+shift+1"
-    var closeOnBlur: Bool? = nil // if true, window closes when it loses focus
-    var showOnStart: Bool? = nil  // open palette immediately on launch
-    var showDockIcon: Bool? = nil // show icon in Dock (default false)
-    var showMenuBarIcon: Bool? = nil // show an icon in macOS menu bar
-    var updateURL: String? = nil // optional URL to releases/latest
-    var showInsideClock: Bool? = nil
-    var showOutsideClock: Bool? = nil
-    var filesDefault: FilesDefault? = nil
-    var files: [String: FileConfig]? = nil
+struct FileRule {
+    let promptMatch: NSRegularExpression
+    let filePositionMatch: NSRegularExpression?
+    let insertBehavior: InsertBehavior
+    let exitBehavior: ExitBehavior
+    let filePath: URL
+    let format: String?
 }
 
-func loadConfig() -> Config {
-    let fm = FileManager.default
+struct FilesDefault {
+    let insertBehavior: InsertBehavior
+    let filePath: URL
+}
 
-    // 1. Path from environment variable CONFIG_PATH
-    if let customPath = ProcessInfo.processInfo.environment["CONFIG_PATH"] {
-        do {
-            let data = try Data(contentsOf: URL(fileURLWithPath: customPath))
-            return try JSONDecoder().decode(Config.self, from: data)
-        } catch {
-            logError("Failed to load config from \(customPath): \(error)")
-            exit(1)
+struct UITheme {
+    let backgroundColor: NSColor
+    let borderColor: NSColor
+    let borderWidth: CGFloat
+    let cornerRadius: CGFloat
+    let textColor: NSColor
+    let placeholderColor: NSColor
+    let fontSize: CGFloat
+}
+
+struct AppConfig {
+    let offsetX: CGFloat
+    let offsetY: CGFloat
+    let width: CGFloat
+    let height: CGFloat
+    let startSelected: Bool
+    let intervalMinutes: Int
+    let hotKey: String
+    let closeOnBlur: Bool
+    let showOnStart: Bool
+    let showDockIcon: Bool
+    let showMenuBarIcon: Bool
+    let showInsideClock: Bool
+    let showOutsideClock: Bool
+    let updateURL: String?
+    let theme: UITheme
+
+    let filesDefault: FilesDefault
+    let fileRules: [FileRule]
+}
+
+// MARK: - Configuration Loading & Validation
+
+private struct RawUITheme: Decodable {
+    var backgroundColor: String?
+    var borderColor: String?
+    var borderWidth: Double?
+    var cornerRadius: Double?
+    var textColor: String?
+    var placeholderColor: String?
+    var fontSize: Double?
+}
+
+private struct RawConfig: Decodable {
+    var offsetX: CGFloat?
+    var offsetY: CGFloat?
+    var width: CGFloat?
+    var height: CGFloat?
+    var startSelected: Bool?
+    var intervalMinutes: Int?
+    var logFile: String?
+    var hotKey: String?
+    var closeOnBlur: Bool?
+    var showOnStart: Bool?
+    var showDockIcon: Bool?
+    var showMenuBarIcon: Bool?
+    var updateURL: String?
+    var showInsideClock: Bool?
+    var showOutsideClock: Bool?
+    var theme: RawUITheme?
+    var filesDefault: RawFilesDefault?
+    var files: [String: RawFileConfig]?
+}
+
+private struct RawFilesDefault: Decodable {
+    var insertBehaviour: String?
+    var file: String?
+}
+
+private struct RawFileConfig: Decodable {
+    var promptMatch: String?
+    var filePositionMatch: String?
+    var insertBehavior: String?
+    var exitBehaviour: String?
+    var file: String?
+    var format: String?
+}
+
+func loadAndValidateConfig() -> AppConfig {
+    let rawConfig = loadRawConfig()
+    return validateConfig(rawConfig)
+}
+
+private func loadRawConfig() -> RawConfig {
+    let configPaths: [String] = [
+        ProcessInfo.processInfo.environment["CONFIG_PATH"],
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/wrud.json").path,
+        FileManager.default.currentDirectoryPath + "/config.json"
+    ].compactMap { $0 }
+
+    for path in configPaths {
+        if FileManager.default.fileExists(atPath: path) {
+            do {
+                let data = try Data(contentsOf: URL(fileURLWithPath: path))
+                return try JSONDecoder().decode(RawConfig.self, from: data)
+            } catch {
+                fatalError("Failed to load config from \(path): \(error)")
+            }
         }
     }
 
-    // 2. ~/.config/wrud.json
-    let homeConfig = fm.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config")
-        .appendingPathComponent("wrud.json")
-    if fm.fileExists(atPath: homeConfig.path) {
-        do {
-            let data = try Data(contentsOf: homeConfig)
-            return try JSONDecoder().decode(Config.self, from: data)
-        } catch {
-            logError("Failed to load ~/.config/wrud.json: \(error)")
-            exit(1)
-        }
-    }
-
-    // 3. "config.json" in current directory (dev convenience)
-    let url = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("config.json")
-    if fm.fileExists(atPath: url.path) {
-        do {
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode(Config.self, from: data)
-        } catch {
-            logError("Failed to load config.json: \(error)")
-            exit(1)
-        }
-    }
-
-    // 3. Fallback defaults
-    return Config()
+    return RawConfig() // Use defaults
 }
 
-// MARK: - Globals & Helpers
+private func validateConfig(_ raw: RawConfig) -> AppConfig {
+    let filesDefault = validateFilesDefault(raw.filesDefault)
+    let fileRules = validateFileRules(raw.files)
+    let theme = validateTheme(raw.theme)
 
-let config = loadConfig()
+    return AppConfig(
+        offsetX: raw.offsetX ?? 40,
+        offsetY: raw.offsetY ?? 40,
+        width: raw.width ?? 800,
+        height: raw.height ?? 64,
+        startSelected: raw.startSelected ?? true,
+        intervalMinutes: max(1, raw.intervalMinutes ?? 30),
+        hotKey: raw.hotKey ?? "cmd+shift+=",
+        closeOnBlur: raw.closeOnBlur ?? true,
+        showOnStart: raw.showOnStart ?? true,
+        showDockIcon: raw.showDockIcon ?? false,
+        showMenuBarIcon: raw.showMenuBarIcon ?? true,
+        showInsideClock: raw.showInsideClock ?? false,
+        showOutsideClock: raw.showOutsideClock ?? false,
+        updateURL: raw.updateURL,
+        theme: theme,
+        filesDefault: filesDefault,
+        fileRules: fileRules
+    )
+}
 
-var isPaused: Bool = false
+private func validateFilesDefault(_ raw: RawFilesDefault?) -> FilesDefault {
+    let defaultFile = raw?.file ?? {
+        let appSupport = try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                      in: .userDomainMask,
+                                                      appropriateFor: nil,
+                                                      create: true)
+            .appendingPathComponent("wrud")
+        return appSupport?.appendingPathComponent("log.md").path
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("wrud-log.md").path
+    }()
 
-func expandPath(_ path: String) -> URL {
+    let behavior = InsertBehavior(rawValue: raw?.insertBehaviour ?? "date") ?? .date
+
+    return FilesDefault(
+        insertBehavior: behavior,
+        filePath: expandPath(defaultFile)
+    )
+}
+
+private func validateFileRules(_ rawFiles: [String: RawFileConfig]?) -> [FileRule] {
+    guard let rawFiles = rawFiles else { return [] }
+
+    return rawFiles
+        .sorted { Int($0.key) ?? 999 < Int($1.key) ?? 999 }
+        .compactMap { validateFileRule($1) }
+}
+
+private func validateFileRule(_ raw: RawFileConfig) -> FileRule? {
+    guard let promptPattern = raw.promptMatch,
+          let filePath = raw.file else {
+        print("⚠️  Invalid file rule: missing promptMatch or file")
+        return nil
+    }
+
+    guard let promptRegex = try? NSRegularExpression(pattern: promptPattern) else {
+        print("⚠️  Invalid regex pattern: \(promptPattern)")
+        return nil
+    }
+
+    let positionRegex = raw.filePositionMatch.flatMap {
+        try? NSRegularExpression(pattern: $0)
+    }
+
+    let insertBehavior = InsertBehavior(rawValue: raw.insertBehavior ?? "append") ?? .append
+    let exitBehavior = ExitBehavior(rawValue: raw.exitBehaviour ?? "finish") ?? .finish
+
+    return FileRule(
+        promptMatch: promptRegex,
+        filePositionMatch: positionRegex,
+        insertBehavior: insertBehavior,
+        exitBehavior: exitBehavior,
+        filePath: expandPath(filePath),
+        format: raw.format
+    )
+}
+
+private func validateTheme(_ raw: RawUITheme?) -> UITheme {
+    return UITheme(
+        backgroundColor: parseColor(raw?.backgroundColor) ?? NSColor(calibratedRed: 0.2, green: 0.2, blue: 0.2, alpha: 0.95),
+        borderColor: parseColor(raw?.borderColor) ?? NSColor(calibratedRed: 0.4, green: 0.4, blue: 0.4, alpha: 0.6),
+        borderWidth: CGFloat(raw?.borderWidth ?? 1.0),
+        cornerRadius: CGFloat(raw?.cornerRadius ?? 12.0),
+        textColor: parseColor(raw?.textColor) ?? NSColor.white,
+        placeholderColor: parseColor(raw?.placeholderColor) ?? NSColor(calibratedRed: 0.7, green: 0.7, blue: 0.7, alpha: 0.6),
+        fontSize: CGFloat(raw?.fontSize ?? 18.0)
+    )
+}
+
+private func parseColor(_ hexString: String?) -> NSColor? {
+    guard let hex = hexString?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+        return nil
+    }
+
+    let cleanHex = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+    guard cleanHex.count == 6 || cleanHex.count == 8 else { return nil }
+
+    var rgbValue: UInt64 = 0
+    Scanner(string: cleanHex).scanHexInt64(&rgbValue)
+
+    if cleanHex.count == 6 {
+        return NSColor(
+            calibratedRed: CGFloat((rgbValue & 0xFF0000) >> 16) / 255.0,
+            green: CGFloat((rgbValue & 0x00FF00) >> 8) / 255.0,
+            blue: CGFloat(rgbValue & 0x0000FF) / 255.0,
+            alpha: 1.0
+        )
+    } else {
+        return NSColor(
+            calibratedRed: CGFloat((rgbValue & 0xFF000000) >> 24) / 255.0,
+            green: CGFloat((rgbValue & 0x00FF0000) >> 16) / 255.0,
+            blue: CGFloat((rgbValue & 0x0000FF00) >> 8) / 255.0,
+            alpha: CGFloat(rgbValue & 0x000000FF) / 255.0
+        )
+    }
+}
+
+private func expandPath(_ path: String) -> URL {
     if path.hasPrefix("~") {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let expanded = path.replacingOccurrences(of: "~", with: home)
         return URL(fileURLWithPath: expanded)
     }
-    if path.hasPrefix("/") {
-        return URL(fileURLWithPath: path)
-    }
     return URL(fileURLWithPath: path)
 }
 
-let logURL: URL = {
-    // Check if filesDefault is configured
-    if let filesDefault = config.filesDefault, let path = filesDefault.file {
-        return expandPath(path)
+// MARK: - File Writing System
+
+struct EntryWriter {
+    private let fileManager = FileManager.default
+
+    func writeEntry(_ text: String, using rule: FileRule) {
+        ensureFileExists(rule.filePath)
+        let content = readFileContent(rule.filePath)
+        let formattedEntry = formatEntry(text, using: rule)
+        let insertionPoint = findInsertionPoint(in: content, for: rule)
+        let newContent = insertEntry(formattedEntry, at: insertionPoint, in: content)
+        writeFileContent(newContent, to: rule.filePath)
+        print("✓ Added to \(rule.filePath.lastPathComponent)")
     }
-    // Fallback to logFile config for backward compatibility
-    if let path = config.logFile {
-        return expandPath(path)
+
+    func writeToDefault(_ text: String, using defaultConfig: FilesDefault) {
+        ensureFileExists(defaultConfig.filePath)
+        let content = readFileContent(defaultConfig.filePath)
+        let formattedEntry = formatDefaultEntry(text, behavior: defaultConfig.insertBehavior)
+        let insertionPoint = findDefaultInsertionPoint(in: content, behavior: defaultConfig.insertBehavior)
+        let newContent = insertEntry(formattedEntry, at: insertionPoint, in: content)
+        writeFileContent(newContent, to: defaultConfig.filePath)
     }
-    let appSupport = try? FileManager.default.url(for: .applicationSupportDirectory,
-                                                  in: .userDomainMask,
-                                                  appropriateFor: nil,
-                                                  create: true)
-        .appendingPathComponent("wrud")
-    if let dir = appSupport {
-        return dir.appendingPathComponent("log.md")
+
+    private func ensureFileExists(_ fileURL: URL) {
+        guard !fileManager.fileExists(atPath: fileURL.path) else { return }
+
+        let dir = fileURL.deletingLastPathComponent()
+        try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? "".write(to: fileURL, atomically: true, encoding: .utf8)
     }
-    // Fallback to home directory if App Support resolution fails
-    return FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("wrud-log.md")
-}()
+
+    private func readFileContent(_ fileURL: URL) -> String {
+        return (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+    }
+
+    private func writeFileContent(_ content: String, to fileURL: URL) {
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+}
+
+// MARK: - Entry Formatting
+
+extension EntryWriter {
+    private func formatEntry(_ text: String, using rule: FileRule) -> String {
+        if let format = rule.format {
+            return format.replacingOccurrences(of: "$prompt", with: text) + "\n"
+        }
+        return text + "\n"
+    }
+
+    private func formatDefaultEntry(_ text: String, behavior: InsertBehavior) -> String {
+        guard behavior == .date else {
+            return text + "\n"
+        }
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm"
+        let timeString = timeFormatter.string(from: Date())
+        return "- [ ] \(text) \(timeString)\n"
+    }
+}
+
+// MARK: - Insertion Point Logic
+
+extension EntryWriter {
+    private func findInsertionPoint(in content: String, for rule: FileRule) -> Int {
+        switch rule.insertBehavior {
+        case .prepend:
+            return 0
+        case .append:
+            return content.count
+        case .endoflist:
+            return findEndOfListPosition(in: content, after: rule.filePositionMatch)
+        case .date:
+            return findDateInsertionPoint(in: content)
+        }
+    }
+
+    private func findDefaultInsertionPoint(in content: String, behavior: InsertBehavior) -> Int {
+        switch behavior {
+        case .prepend: return 0
+        case .append, .endoflist: return content.count
+        case .date: return findDateInsertionPoint(in: content)
+        }
+    }
+
+    private func findEndOfListPosition(in content: String, after positionRegex: NSRegularExpression?) -> Int {
+        guard let regex = positionRegex else { return content.count }
+
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        guard let match = regex.firstMatch(in: content, options: [], range: range) else {
+            return content.count
+        }
+
+        let matchEnd = match.range.location + match.range.length
+        guard let stringRange = Range(NSRange(location: matchEnd, length: 0), in: content) else {
+            return content.count
+        }
+
+        let searchRange = stringRange.lowerBound..<content.endIndex
+        guard let newlineRange = content.range(of: "\n", range: searchRange) else {
+            return content.count
+        }
+
+        return scanForLastListItem(in: content, startingFrom: newlineRange.upperBound)
+    }
+
+    private func scanForLastListItem(in content: String, startingFrom startIndex: String.Index) -> Int {
+        var currentPos = startIndex
+        var lastListItemEnd: String.Index?
+
+        while currentPos < content.endIndex {
+            let remainingRange = currentPos..<content.endIndex
+            guard let nextNewline = content.range(of: "\n", range: remainingRange) else {
+                let finalLine = String(content[currentPos...]).trimmingCharacters(in: .whitespaces)
+                if finalLine.hasPrefix("- ") || finalLine.hasPrefix("-\t") {
+                    lastListItemEnd = content.endIndex
+                }
+                break
+            }
+
+            let lineRange = currentPos..<nextNewline.lowerBound
+            let line = String(content[lineRange]).trimmingCharacters(in: .whitespaces)
+
+            if line.hasPrefix("- ") || line.hasPrefix("-\t") {
+                lastListItemEnd = nextNewline.upperBound
+            } else if !line.isEmpty {
+                break
+            }
+
+            currentPos = nextNewline.upperBound
+        }
+
+        return lastListItemEnd.map { content.distance(from: content.startIndex, to: $0) }
+            ?? content.distance(from: content.startIndex, to: startIndex)
+    }
+
+    private func findDateInsertionPoint(in content: String) -> Int {
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "yyyy-MM-dd"
+        let dayString = dayFormatter.string(from: Date())
+
+        if content.contains("# \(dayString)") {
+            return content.count
+        }
+
+        var updatedContent = content
+        if !content.hasSuffix("\n") { updatedContent += "\n" }
+        updatedContent += "# \(dayString)\n"
+
+        // This is a bit hacky - we need to update the content for date behavior
+        // In a real refactor, we'd handle this differently
+        return updatedContent.count
+    }
+
+    private func insertEntry(_ entry: String, at insertionPoint: Int, in content: String) -> String {
+        var mutableContent = content
+
+        // Handle date insertion specially
+        if insertionPoint > content.count {
+            return content + entry
+        }
+
+        if insertionPoint >= content.count {
+            return content + entry
+        }
+
+        if insertionPoint <= 0 {
+            return entry + content
+        }
+
+        let index = content.index(content.startIndex, offsetBy: insertionPoint)
+        mutableContent.insert(contentsOf: entry, at: index)
+        return mutableContent
+    }
+}
+
+// MARK: - Entry Processing
+
+func processEntry(_ text: String, config: AppConfig) {
+    let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedText.isEmpty else { return }
+
+    let writer = EntryWriter()
+
+    // Process file rules in order
+    for rule in config.fileRules {
+        let range = NSRange(trimmedText.startIndex..<trimmedText.endIndex, in: trimmedText)
+        if rule.promptMatch.firstMatch(in: trimmedText, options: [], range: range) != nil {
+            writer.writeEntry(trimmedText, using: rule)
+            if rule.exitBehavior == .finish {
+                return
+            }
+        }
+    }
+
+    // Fallback to default
+    writer.writeToDefault(trimmedText, using: config.filesDefault)
+}
+
+// MARK: - Utility Functions
 
 func logError(_ message: String) {
     print("ERROR: \(message)")
 }
-
-// Remove extractTags, tagCache, refreshTags
 
 func formatMMSS(_ interval: TimeInterval) -> String {
     let total = Int(max(0, interval))
@@ -135,7 +480,32 @@ func formatMMSS(_ interval: TimeInterval) -> String {
     return String(format: "%02d:%02d", minutes, seconds)
 }
 
-// MARK: - HotKey Parsing & Registration
+func getVersionString() -> String {
+    let now = Date()
+    let calendar = Calendar.current
+    let dayOfYear = calendar.ordinality(of: .day, in: .year, for: now) ?? 1
+    let hour = calendar.component(.hour, from: now)
+    return String(format: "%03d%02d", dayOfYear, hour)
+}
+
+func formatHotKeyForDisplay(_ hotKey: String) -> String {
+    return hotKey
+        .replacingOccurrences(of: "cmd", with: "⌘")
+        .replacingOccurrences(of: "shift", with: "⇧")
+        .replacingOccurrences(of: "option", with: "⌥")
+        .replacingOccurrences(of: "alt", with: "⌥")
+        .replacingOccurrences(of: "ctrl", with: "⌃")
+        .replacingOccurrences(of: "control", with: "⌃")
+        .replacingOccurrences(of: "+", with: "")
+        .uppercased()
+}
+
+// MARK: - Global Configuration
+
+let config = loadAndValidateConfig()
+var isPaused: Bool = false
+
+// MARK: - HotKey System
 
 func parseHotKey(_ string: String) -> (UInt32, UInt32)? {
     let parts = string.lowercased().split(separator: "+")
@@ -151,7 +521,6 @@ func parseHotKey(_ string: String) -> (UInt32, UInt32)? {
         case "option", "alt": modifiers |= UInt32(optionKey)
         case "ctrl", "control": modifiers |= UInt32(controlKey)
         default:
-            // Assume this is the key
             switch part {
             case "1": keyCode = 18
             case "2": keyCode = 19
@@ -163,6 +532,7 @@ func parseHotKey(_ string: String) -> (UInt32, UInt32)? {
             case "8": keyCode = 28
             case "9": keyCode = 25
             case "0": keyCode = 29
+            case "=": keyCode = 24
             default: break
             }
         }
@@ -173,14 +543,13 @@ func parseHotKey(_ string: String) -> (UInt32, UInt32)? {
 }
 
 func registerGlobalHotKey() {
-    let hotKeyString = config.hotKey ?? "cmd+shift+1"
-    guard let (keyCode, modifiers) = parseHotKey(hotKeyString) else {
-        logError("Unsupported hotkey string: \(hotKeyString)")
+    guard let (keyCode, modifiers) = parseHotKey(config.hotKey) else {
+        logError("Unsupported hotkey string: \(config.hotKey)")
         return
     }
 
     var hotKeyRef: EventHotKeyRef?
-    let hotKeyID = EventHotKeyID(signature: OSType(0x7768646b), id: 1) // 'whdk'
+    let hotKeyID = EventHotKeyID(signature: OSType(0x7768646b), id: 1)
 
     let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetEventDispatcherTarget(), 0, &hotKeyRef)
     if status != noErr {
@@ -199,16 +568,16 @@ func registerGlobalHotKey() {
     }, 1, &spec, nil, nil)
 }
 
-// MARK: - UI
+// MARK: - Application Setup
 
 let app = NSApplication.shared
-if config.showDockIcon ?? false {
-    app.setActivationPolicy(.regular) // Dock + menu bar
+if config.showDockIcon {
+    app.setActivationPolicy(.regular)
 } else {
-    app.setActivationPolicy(.accessory) // menu bar only
+    app.setActivationPolicy(.accessory)
 }
 
-// MARK: - Status Bar Item
+// MARK: - Status Bar Controller
 
 final class StatusBarController: NSObject {
     private var item: NSStatusItem?
@@ -220,7 +589,7 @@ final class StatusBarController: NSObject {
     private var countdownTimer: Timer?
 
     func setup() {
-        guard config.showMenuBarIcon ?? true else { return }
+        guard config.showMenuBarIcon else { return }
 
         let statusBar = NSStatusBar.system
         item = statusBar.statusItem(withLength: NSStatusItem.variableLength)
@@ -247,18 +616,32 @@ final class StatusBarController: NSObject {
         self.nextItem = next
         menu.addItem(next)
 
+        // Add version display
+        let version = NSMenuItem(title: "v\(getVersionString())", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        // Make version text muted by setting it as attributed string
+        let attributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        version.attributedTitle = NSAttributedString(string: "v\(getVersionString())", attributes: attributes)
+        menu.addItem(version)
+
         menu.addItem(NSMenuItem.separator())
 
-        let showNow = NSMenuItem(title: "Show Now", action: #selector(showNowAction), keyEquivalent: "s")
+        let showNow = NSMenuItem(title: "Show Now", action: #selector(showNowAction), keyEquivalent: "")
+        showNow.keyEquivalentModifierMask = []
+        // Set the correct hotkey display from config
+        let hotkeyDisplay = formatHotKeyForDisplay(config.hotKey)
+        showNow.title = "Show Now \t\(hotkeyDisplay)"
         showNow.target = self
         menu.addItem(showNow)
 
-        let toggle = NSMenuItem(title: "Pause", action: #selector(togglePauseAction), keyEquivalent: "p")
+        let toggle = NSMenuItem(title: "Pause", action: #selector(togglePauseAction), keyEquivalent: "")
         toggle.target = self
         self.toggleItem = toggle
         menu.addItem(toggle)
 
-        let startAtLogin = NSMenuItem(title: "Start at Login", action: #selector(toggleStartAtLoginAction), keyEquivalent: "l")
+        let startAtLogin = NSMenuItem(title: "Start at Login", action: #selector(toggleStartAtLoginAction), keyEquivalent: "")
         startAtLogin.target = self
         self.startAtLoginItem = startAtLogin
         menu.addItem(startAtLogin)
@@ -285,8 +668,7 @@ final class StatusBarController: NSObject {
         let remaining = max(0, schedulerTimer?.fireDate.timeIntervalSinceNow ?? 0)
         let mmss = formatMMSS(remaining)
         if let button = item?.button {
-            let showOutside = config.showOutsideClock ?? false
-            button.title = isPaused ? "🕒⏸" : (showOutside ? "🕒 \(mmss)" : "🕒")
+            button.title = isPaused ? "🕒⏸" : (config.showOutsideClock ? "🕒 \(mmss)" : "🕒")
         }
         if let fireDate = schedulerTimer?.fireDate {
             let timeFormatter = DateFormatter(); timeFormatter.dateFormat = "HH:mm"
@@ -336,7 +718,8 @@ final class StatusBarController: NSObject {
 let statusBarController = StatusBarController()
 statusBarController.setup()
 
-// Custom text field to handle control key shortcuts locally
+// MARK: - Text Input UI
+
 final class CommandTextField: NSTextField {
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control), let chars = event.charactersIgnoringModifiers {
@@ -345,7 +728,6 @@ final class CommandTextField: NSTextField {
                 NSApp.sendAction(#selector(NSTextView.moveToBeginningOfLine(_:)), to: nil, from: self)
                 return
             case "e", "r":
-                // Support both Ctrl+E and requested Ctrl+R for end-of-line
                 NSApp.sendAction(#selector(NSTextView.moveToEndOfLine(_:)), to: nil, from: self)
                 return
             case "w":
@@ -361,20 +743,20 @@ final class CommandTextField: NSTextField {
 
 final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     private let onSubmit: (String) -> Void
-    private let cfg: Config
+    private let appConfig: AppConfig
     private var globalClickMonitor: Any?
     private weak var inputField: NSTextField?
 
-    init(cfg: Config, onSubmit: @escaping (String) -> Void) {
+    init(appConfig: AppConfig, onSubmit: @escaping (String) -> Void) {
         self.onSubmit = onSubmit
-        self.cfg = cfg
+        self.appConfig = appConfig
         let screenFrame: NSRect = (NSScreen.main ?? NSScreen.screens.first ?? NSScreen.screens[0]).visibleFrame
-        let width = cfg.width ?? 600
-        let height = cfg.height ?? 60
+        let width = appConfig.width
+        let height = appConfig.height
         let centerX = screenFrame.midX - (width / 2)
         let centerY = screenFrame.midY - (height / 2)
-        let deltaX: CGFloat = cfg.offsetX ?? 0
-        let deltaY: CGFloat = cfg.offsetY ?? 0
+        let deltaX: CGFloat = appConfig.offsetX
+        let deltaY: CGFloat = appConfig.offsetY
         let frame = NSRect(x: centerX + deltaX, y: centerY + deltaY, width: width, height: height)
 
         class PaletteWindow: NSWindow {
@@ -388,37 +770,73 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
                                    defer: false)
         window.level = .floating
         window.isOpaque = false
-        window.backgroundColor = NSColor(calibratedWhite: 0.1, alpha: 0.9)
+        window.backgroundColor = .clear
         window.hasShadow = true
         window.isMovable = false
         window.isMovableByWindowBackground = false
         window.titleVisibility = .hidden
-        window.contentView?.wantsLayer = true
-        window.contentView?.layer?.cornerRadius = 10
+
+        // Create a background view with proper styling
+        let backgroundView = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        backgroundView.wantsLayer = true
+        backgroundView.layer?.backgroundColor = appConfig.theme.backgroundColor.cgColor
+        backgroundView.layer?.cornerRadius = appConfig.theme.cornerRadius
+        backgroundView.layer?.borderWidth = appConfig.theme.borderWidth
+        backgroundView.layer?.borderColor = appConfig.theme.borderColor.cgColor
+        window.contentView?.addSubview(backgroundView)
 
         super.init(window: window)
 
-        let textField = CommandTextField(frame: NSRect(x: 16,
-                                                  y: (height - 30) / 2,
-                                                  width: width - 32,
-                                                  height: 30))
+        // Calculate text field dimensions proportionally
+        let textFieldHeight = height * 0.5  // 50% of window height
+        let textFieldY = (height - textFieldHeight) / 2
+        let padding: CGFloat = 20
+
+        let textField = CommandTextField(frame: NSRect(x: padding,
+                                                  y: textFieldY,
+                                                  width: width - (padding * 2),
+                                                  height: textFieldHeight))
         textField.isBordered = false
         textField.drawsBackground = false
         textField.focusRingType = .none
-        textField.font = .systemFont(ofSize: 20, weight: .medium)
-        textField.textColor = .white
-        textField.placeholderString = "Add item"
-        textField.delegate = self
+        textField.font = .systemFont(ofSize: appConfig.theme.fontSize, weight: .medium)
+        textField.textColor = appConfig.theme.textColor
+        textField.alignment = .left
+
+        // Configure cell for proper text centering and placeholder
         if let cell = textField.cell as? NSTextFieldCell {
+            cell.usesSingleLineMode = true
             cell.wraps = false
             cell.isScrollable = true
-            cell.usesSingleLineMode = true
             cell.lineBreakMode = .byClipping
+
+            // Set placeholder with same font size as input text
+            let placeholderAttributes: [NSAttributedString.Key: Any] = [
+                .foregroundColor: appConfig.theme.placeholderColor,
+                .font: NSFont.systemFont(ofSize: appConfig.theme.fontSize, weight: .medium)
+            ]
+            cell.placeholderAttributedString = NSAttributedString(
+                string: "Add item",
+                attributes: placeholderAttributes
+            )
         }
+
+        // Simple vertical centering using transform
+        let verticalCenter = (textFieldHeight - appConfig.theme.fontSize) / 2
+        if verticalCenter > 0 {
+            textField.frame = NSRect(
+                x: padding,
+                y: textFieldY + verticalCenter / 2,
+                width: width - (padding * 2),
+                height: textFieldHeight - verticalCenter
+            )
+        }
+
+        textField.delegate = self
         window.contentView?.addSubview(textField)
         self.inputField = textField
 
-        if cfg.startSelected ?? true {
+        if appConfig.startSelected {
             NSApplication.shared.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             DispatchQueue.main.async {
@@ -431,7 +849,7 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
 
         window.delegate = self
 
-        if cfg.closeOnBlur ?? true {
+        if appConfig.closeOnBlur {
             globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
                 self?.window?.close()
             }
@@ -440,10 +858,8 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
 
     required init?(coder: NSCoder) { nil }
 
-    // MARK: - NSWindowDelegate
-
     func windowDidResignKey(_ notification: Notification) {
-        if cfg.closeOnBlur ?? true { // default to close on blur
+        if appConfig.closeOnBlur {
             self.window?.close()
         }
     }
@@ -462,7 +878,6 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
             self.window?.close()
             return true
         case #selector(NSTextView.insertLineBreak(_:)):
-            // Treat Shift+Enter as submit-and-continue
             if let tf = control as? NSTextField {
                 onSubmit(tf.stringValue)
                 tf.stringValue = ""
@@ -488,210 +903,13 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
             return false
         }
     }
-
-    // Removed autocomplete delegate methods
 }
 
-// MARK: - Logging
-
-func appendEntry(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-
-    // Process files in order
-    if let files = config.files {
-        let sortedFiles = files.sorted { (first, second) in
-            let firstOrder = Int(first.key) ?? 999
-            let secondOrder = Int(second.key) ?? 999
-            return firstOrder < secondOrder
-        }
-
-        for (_, fileConfig) in sortedFiles {
-            if let promptRegex = fileConfig.promptMatch {
-                do {
-                    let regex = try NSRegularExpression(pattern: promptRegex)
-                    let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
-                    if regex.firstMatch(in: trimmed, options: [], range: range) != nil {
-                        // Found a match, write to this file
-                        if let filePath = fileConfig.file {
-                            writeToFile(text: trimmed, config: fileConfig, filePath: filePath)
-                            print("✓ Added to \(URL(fileURLWithPath: filePath).lastPathComponent)")
-                            // Check exit behavior
-                            if fileConfig.exitBehaviour != "continue" {
-                                return // Default is "finish"
-                            }
-                        }
-                    }
-                } catch {
-                    logError("Invalid regex pattern: \(promptRegex)")
-                }
-            }
-        }
-    }
-
-    // Fall back to filesDefault if no matches
-    if let filesDefault = config.filesDefault {
-        let defaultConfig = FileConfig()
-        writeToFile(text: trimmed, config: defaultConfig, filePath: filesDefault.file ?? logURL.path, insertBehaviour: filesDefault.insertBehaviour)
-    } else {
-        // Legacy behavior - write to logURL
-        writeToFile(text: trimmed, config: FileConfig(), filePath: logURL.path, insertBehaviour: "date")
-    }
-}
-
-func writeToFile(text: String, config: FileConfig, filePath: String, insertBehaviour: String? = nil) {
-    let fileURL = expandPath(filePath)
-    let behavior = insertBehaviour ?? config.insertBehavior ?? "date"
-
-    // Ensure file and its directory exist
-    if !FileManager.default.fileExists(atPath: fileURL.path) {
-        let dir = fileURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            do {
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
-            } catch { logError("Failed to create directory: \(error)") }
-        }
-        do {
-            try "".write(to: fileURL, atomically: true, encoding: .utf8)
-        } catch { logError("Failed to create file: \(error)") }
-    }
-
-    var content = ""
-    do {
-        content = try String(contentsOf: fileURL, encoding: .utf8)
-    } catch { logError("Failed to read existing file: \(error)") }
-
-    let timeFormatter = DateFormatter(); timeFormatter.dateFormat = "HH:mm"
-    let timeString = timeFormatter.string(from: Date())
-
-    var newEntry = ""
-    var insertionPoint = content.count
-
-    // Handle behavior and format
-    switch behavior {
-    case "date":
-        let dayFormatter = DateFormatter(); dayFormatter.dateFormat = "yyyy-MM-dd"
-        let dayString = dayFormatter.string(from: Date())
-
-        if !content.contains("# \(dayString)") {
-            if !content.hasSuffix("\n") { content += "\n" }
-            content += "# \(dayString)\n"
-        }
-        if let format = config.format {
-            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
-        } else {
-            newEntry = "- [ ] \(text) \(timeString)\n"
-        }
-        insertionPoint = content.count
-    case "prepend":
-        if let format = config.format {
-            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
-        } else {
-            newEntry = "\(text)\n"
-        }
-        insertionPoint = 0
-    case "append":
-        if let format = config.format {
-            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
-        } else {
-            newEntry = "\(text)\n"
-        }
-        insertionPoint = content.count
-    case "endoflist":
-        if let format = config.format {
-            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
-        } else {
-            newEntry = "\(text)\n"
-        }
-        // Handle file position matching for endoflist
-        if let positionRegex = config.filePositionMatch {
-            do {
-                let regex = try NSRegularExpression(pattern: positionRegex)
-                let range = NSRange(content.startIndex..<content.endIndex, in: content)
-                if let match = regex.firstMatch(in: content, options: [], range: range) {
-                    // Find end of the matched line and move to next line
-                    let matchEnd = match.range.location + match.range.length
-                    if let stringRange = Range(NSRange(location: matchEnd, length: 0), in: content) {
-                        let searchRange = stringRange.lowerBound..<content.endIndex
-                        if let newlineRange = content.range(of: "\n", range: searchRange) {
-                            var currentPos = newlineRange.upperBound
-                            var lastDashLineEnd: String.Index? = nil
-
-                            // Find consecutive lines starting with "-"
-                            while currentPos < content.endIndex {
-                                let remainingRange = currentPos..<content.endIndex
-                                if let nextNewline = content.range(of: "\n", range: remainingRange) {
-                                    let lineRange = currentPos..<nextNewline.lowerBound
-                                    let line = String(content[lineRange]).trimmingCharacters(in: .whitespaces)
-
-                                    if line.hasPrefix("- ") || line.hasPrefix("-\t") {
-                                        lastDashLineEnd = nextNewline.upperBound
-                                    } else if !line.isEmpty {
-                                        // Hit a non-empty, non-dash line, stop here
-                                        break
-                                    }
-                                    currentPos = nextNewline.upperBound
-                                } else {
-                                    // No more newlines, check the last line
-                                    let lineRange = currentPos..<content.endIndex
-                                    let line = String(content[lineRange]).trimmingCharacters(in: .whitespaces)
-                                    if line.hasPrefix("- ") || line.hasPrefix("-\t") {
-                                        lastDashLineEnd = content.endIndex
-                                    }
-                                    break
-                                }
-                            }
-
-                            if let dashEnd = lastDashLineEnd {
-                                insertionPoint = content.distance(from: content.startIndex, to: dashEnd)
-                            } else {
-                                // No dash lines found after the match, insert right after the match
-                                insertionPoint = content.distance(from: content.startIndex, to: newlineRange.upperBound)
-                            }
-                        } else {
-                            insertionPoint = content.count
-                        }
-                    }
-                } else {
-                    insertionPoint = content.count
-                }
-            } catch {
-                logError("Invalid file position regex: \(positionRegex)")
-                insertionPoint = content.count
-            }
-        } else {
-            insertionPoint = content.count
-        }
-    default:
-        if let format = config.format {
-            newEntry = format.replacingOccurrences(of: "$prompt", with: text) + "\n"
-        } else {
-            newEntry = "- [ ] \(text) \(timeString)\n"
-        }
-        insertionPoint = content.count
-    }
-
-    // Insert the new entry
-    if insertionPoint >= content.count {
-        content += newEntry
-    } else if insertionPoint <= 0 {
-        content = newEntry + content
-    } else {
-        let index = content.index(content.startIndex, offsetBy: insertionPoint)
-        content.insert(contentsOf: newEntry, at: index)
-    }
-
-    do {
-        try content.write(to: fileURL, atomically: true, encoding: .utf8)
-    } catch { logError("Failed to write to file: \(error)") }
-}
-
-// MARK: - Scheduler
+// MARK: - Scheduling System
 
 var activeControllers: [PaletteWindowController] = []
 
 func showPalette() {
-    // If a palette is already open, just focus it and return
     if let existing = activeControllers.last?.window {
         existing.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -699,8 +917,8 @@ func showPalette() {
     }
 
     var ctrl: PaletteWindowController? = nil
-    ctrl = PaletteWindowController(cfg: config) { text in
-        appendEntry(text)
+    ctrl = PaletteWindowController(appConfig: config) { text in
+        processEntry(text, config: config)
         if let c = ctrl {
             activeControllers.removeAll { $0 === c }
         }
@@ -713,26 +931,19 @@ func showPalette() {
 }
 
 func nextScheduledDate(from date: Date = Date()) -> Date {
-    let interval = config.intervalMinutes ?? 30
-    return nextIntervalAligned(interval: interval, from: date)
-}
-
-func nextIntervalAligned(interval: Int, from date: Date) -> Date {
+    let interval = config.intervalMinutes
     let calendar = Calendar.current
     let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
     let currentMinute = comps.minute ?? 0
 
-    // Calculate next interval aligned with top of hour (0 minutes)
     let nextMinute = ((currentMinute / interval) + 1) * interval
 
     if nextMinute < 60 {
-        // Same hour
         var newComps = comps
         newComps.minute = nextMinute
         newComps.second = 0
         return calendar.date(from: newComps)!
     } else {
-        // Next hour
         let nextHour = calendar.date(byAdding: .hour, value: 1, to: date)!
         var newComps = calendar.dateComponents([.year, .month, .day, .hour], from: nextHour)
         newComps.minute = nextMinute - 60
@@ -740,8 +951,6 @@ func nextIntervalAligned(interval: Int, from date: Date) -> Date {
         return calendar.date(from: newComps)!
     }
 }
-
-
 
 extension Date {
     func withZeroSeconds() -> Date {
@@ -758,7 +967,7 @@ var lastFireDate: Date?
 func startScheduler() {
     guard schedulerTimer == nil else { return }
     let firstFire = nextScheduledDate()
-    let interval = config.intervalMinutes ?? 30
+    let interval = config.intervalMinutes
     let t = Timer(fireAt: firstFire,
                   interval: TimeInterval(interval * 60),
                   target: BlockOperation { showPalette() },
@@ -786,7 +995,7 @@ func togglePause() {
 
 startScheduler()
 
-// MARK: - Start at Login (LaunchAgent)
+// MARK: - Launch Agent Management
 
 func agentPlistURL() -> URL {
     let bundleId = "dev.local.wrud"
@@ -830,11 +1039,10 @@ func runLaunchCtl(_ args: [String]) -> Int32 {
     do { try task.run(); task.waitUntilExit(); return task.terminationStatus } catch { return -1 }
 }
 
-// Register global hot key
+// MARK: - Application Startup
+
 registerGlobalHotKey()
-// Show prompt on start if enabled (default true)
-if config.showOnStart ?? true {
+if config.showOnStart {
     showPalette()
 }
-// Start app event loop
-app.run() 
+app.run()

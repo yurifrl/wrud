@@ -80,6 +80,8 @@ tasks:
 
   install-app:
     desc: "Install the app to ~/Applications"
+    deps:
+      - build-app
     cmds:
       - |
         bash -euo pipefail -c '
