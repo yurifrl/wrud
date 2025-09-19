@@ -78,7 +78,7 @@ tasks:
         echo "Built $APP_DIR"
         '
 
-  install-app:
+  install:
     desc: "Install the app to ~/Applications"
     deps:
       - build-app
