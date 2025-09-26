@@ -1,0 +1,2 @@
+- [ ] Allow Copy and Paster
+- [ ] Make it insert on the daily note after the last entry on #Tasks
