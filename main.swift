@@ -16,12 +16,102 @@ enum ExitBehavior: String, CaseIterable {
     case `continue` = "continue"
 }
 
+struct FileDestination {
+    enum Mode {
+        case file(URL)
+        case directory(URL, NSRegularExpression?)
+    }
+
+    enum Resolution {
+        case success(URL)
+        case failure(String)
+    }
+
+    let mode: Mode
+
+    func resolve(using fileManager: FileManager = .default) -> Resolution {
+        switch mode {
+        case .file(let url):
+            return .success(url)
+        case .directory(let directoryURL, let pattern):
+            return resolveLatestFile(in: directoryURL, matching: pattern, fileManager: fileManager)
+        }
+    }
+
+    var allowsCreationIfMissing: Bool {
+        switch mode {
+        case .file:
+            return true
+        case .directory:
+            return false
+        }
+    }
+
+    private func resolveLatestFile(in directoryURL: URL,
+                                   matching pattern: NSRegularExpression?,
+                                   fileManager: FileManager) -> Resolution {
+        let contents: [URL]
+        do {
+            contents = try fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            if !fileManager.fileExists(atPath: directoryURL.path) {
+                return .failure("Directory not found at \(directoryURL.path)")
+            }
+            return .failure("Unable to read directory \(directoryURL.lastPathComponent): \(error.localizedDescription)")
+        }
+
+        let files = contents.filter { url in
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                return false
+            }
+
+            guard let pattern = pattern else { return true }
+            let name = url.lastPathComponent
+            let range = NSRange(name.startIndex..<name.endIndex, in: name)
+            return pattern.firstMatch(in: name, options: [], range: range) != nil
+        }
+
+        guard !files.isEmpty else {
+            if let pattern = pattern {
+                return .failure("No files in \(directoryURL.lastPathComponent) matched pattern \(pattern.pattern)")
+            }
+            return .failure("No files found in directory \(directoryURL.lastPathComponent)")
+        }
+
+        func modificationDate(for url: URL) -> Date {
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            return values?.contentModificationDate ?? .distantPast
+        }
+
+        let selected = files.sorted { lhs, rhs in
+            let lhsDate = modificationDate(for: lhs)
+            let rhsDate = modificationDate(for: rhs)
+            if lhsDate == rhsDate {
+                return lhs.lastPathComponent > rhs.lastPathComponent
+            }
+            return lhsDate > rhsDate
+        }.first
+
+        guard let resolved = selected else {
+            return .failure("No selectable files found in \(directoryURL.lastPathComponent)")
+        }
+
+        return .success(resolved)
+    }
+}
+
 struct FileRule {
+    let promptPattern: String
     let promptMatch: NSRegularExpression
     let filePositionMatch: NSRegularExpression?
     let insertBehavior: InsertBehavior
     let exitBehavior: ExitBehavior
-    let filePath: URL
+    let destination: FileDestination
     let format: String?
 }
 
@@ -105,6 +195,8 @@ private struct RawFileConfig: Decodable {
     var insertBehavior: String?
     var exitBehaviour: String?
     var file: String?
+    var directory: String?
+    var fileMatch: String?
     var format: String?
 }
 
@@ -114,21 +206,27 @@ func loadAndValidateConfig() -> AppConfig {
 }
 
 private func loadRawConfig() -> RawConfig {
+    let cwdConfig = FileManager.default.currentDirectoryPath + "/config.json"
+    let homeConfig = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/wrud.json").path
+
+    let envConfig = ProcessInfo.processInfo.environment["CONFIG_PATH"].flatMap { $0.isEmpty ? nil : $0 }
+
     let configPaths: [String] = [
-        ProcessInfo.processInfo.environment["CONFIG_PATH"],
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/wrud.json").path,
-        FileManager.default.currentDirectoryPath + "/config.json"
+        envConfig,
+        cwdConfig,
+        homeConfig
     ].compactMap { $0 }
 
     for path in configPaths {
-        if FileManager.default.fileExists(atPath: path) {
-            do {
-                let data = try Data(contentsOf: URL(fileURLWithPath: path))
-                return try JSONDecoder().decode(RawConfig.self, from: data)
-            } catch {
-                fatalError("Failed to load config from \(path): \(error)")
-            }
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+
+        do {
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            return try JSONDecoder().decode(RawConfig.self, from: data)
+        } catch {
+            print("⚠️  Skipping config at \(path): \(error.localizedDescription)")
+            continue
         }
     }
 
@@ -189,9 +287,8 @@ private func validateFileRules(_ rawFiles: [String: RawFileConfig]?) -> [FileRul
 }
 
 private func validateFileRule(_ raw: RawFileConfig) -> FileRule? {
-    guard let promptPattern = raw.promptMatch,
-          let filePath = raw.file else {
-        print("⚠️  Invalid file rule: missing promptMatch or file")
+    guard let promptPattern = raw.promptMatch else {
+        print("⚠️  Invalid file rule: missing promptMatch")
         return nil
     }
 
@@ -201,18 +298,40 @@ private func validateFileRule(_ raw: RawFileConfig) -> FileRule? {
     }
 
     let positionRegex = raw.filePositionMatch.flatMap {
-        try? NSRegularExpression(pattern: $0)
+        try? NSRegularExpression(pattern: $0, options: [.anchorsMatchLines])
     }
 
     let insertBehavior = InsertBehavior(rawValue: raw.insertBehavior ?? "append") ?? .append
     let exitBehavior = ExitBehavior(rawValue: raw.exitBehaviour ?? "finish") ?? .finish
 
+    let destination: FileDestination
+    if let file = raw.file {
+        destination = FileDestination(mode: .file(expandPath(file)))
+    } else if let directory = raw.directory {
+        let directoryURL = expandPath(directory)
+        var matchRegex: NSRegularExpression?
+
+        if let pattern = raw.fileMatch {
+            matchRegex = try? NSRegularExpression(pattern: pattern)
+            if matchRegex == nil {
+                print("⚠️  Invalid fileMatch regex: \(pattern)")
+                return nil
+            }
+        }
+
+        destination = FileDestination(mode: .directory(directoryURL, matchRegex))
+    } else {
+        print("⚠️  Invalid file rule: missing file or directory for pattern \(promptPattern)")
+        return nil
+    }
+
     return FileRule(
+        promptPattern: promptPattern,
         promptMatch: promptRegex,
         filePositionMatch: positionRegex,
         insertBehavior: insertBehavior,
         exitBehavior: exitBehavior,
-        filePath: expandPath(filePath),
+        destination: destination,
         format: raw.format
     )
 }
@@ -271,14 +390,28 @@ private func expandPath(_ path: String) -> URL {
 struct EntryWriter {
     private let fileManager = FileManager.default
 
-    func writeEntry(_ text: String, using rule: FileRule) {
-        ensureFileExists(rule.filePath)
-        let content = readFileContent(rule.filePath)
-        let formattedEntry = formatEntry(text, using: rule)
-        let insertionPoint = findInsertionPoint(in: content, for: rule)
-        let newContent = insertEntry(formattedEntry, at: insertionPoint, in: content)
-        writeFileContent(newContent, to: rule.filePath)
-        print("✓ Added to \(rule.filePath.lastPathComponent)")
+    @discardableResult
+    func writeEntry(_ text: String, using rule: FileRule) -> Bool {
+        switch rule.destination.resolve(using: fileManager) {
+        case .success(let targetURL):
+            if rule.destination.allowsCreationIfMissing {
+                ensureFileExists(targetURL)
+            } else if !fileManager.fileExists(atPath: targetURL.path) {
+                print("⚠️  Rule \(rule.promptPattern) skipped '\(text)': target file does not exist at \(targetURL.path)")
+                return false
+            }
+
+            let content = readFileContent(targetURL)
+            let formattedEntry = formatEntry(text, using: rule)
+            let insertionPoint = findInsertionPoint(in: content, for: rule)
+            let newContent = insertEntry(formattedEntry, at: insertionPoint, in: content)
+            writeFileContent(newContent, to: targetURL)
+            print("✓ Rule \(rule.promptPattern) appended to \(targetURL.lastPathComponent): \(text)")
+            return true
+        case .failure(let message):
+            print("⚠️  Rule \(rule.promptPattern) skipped '\(text)': \(message)")
+            return false
+        }
     }
 
     func writeToDefault(_ text: String, using defaultConfig: FilesDefault) {
@@ -288,6 +421,7 @@ struct EntryWriter {
         let insertionPoint = findDefaultInsertionPoint(in: content, behavior: defaultConfig.insertBehavior)
         let newContent = insertEntry(formattedEntry, at: insertionPoint, in: content)
         writeFileContent(newContent, to: defaultConfig.filePath)
+        print("✓ Default log appended to \(defaultConfig.filePath.lastPathComponent): \(text)")
     }
 
     private func ensureFileExists(_ fileURL: URL) {
@@ -451,20 +585,36 @@ func processEntry(_ text: String, config: AppConfig) {
     guard !trimmedText.isEmpty else { return }
 
     let writer = EntryWriter()
+    var matchedRule = false
+    var handledByRule = false
 
     // Process file rules in order
     for rule in config.fileRules {
         let range = NSRange(trimmedText.startIndex..<trimmedText.endIndex, in: trimmedText)
         if rule.promptMatch.firstMatch(in: trimmedText, options: [], range: range) != nil {
-            writer.writeEntry(trimmedText, using: rule)
+            matchedRule = true
+            print("→ Rule \(rule.promptPattern) matched '\(trimmedText)', attempting write")
+            let didWrite = writer.writeEntry(trimmedText, using: rule)
+            handledByRule = handledByRule || didWrite
+
             if rule.exitBehavior == .finish {
-                return
+                if didWrite {
+                    return
+                }
+                break
             }
         }
     }
 
     // Fallback to default
-    writer.writeToDefault(trimmedText, using: config.filesDefault)
+    if !handledByRule {
+        if matchedRule {
+            print("ℹ️ Matched rule(s) but no file was updated; falling back to default log")
+        } else {
+            print("ℹ️ No file rules matched '\(trimmedText)', using default log")
+        }
+        writer.writeToDefault(trimmedText, using: config.filesDefault)
+    }
 }
 
 // MARK: - Utility Functions

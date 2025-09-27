@@ -1,4 +1,4 @@
-# What Are You Doing?
+# 🚨⚙️ What Are You Doing?
 
 Small macOS floating command palette to quickly log tasks to a Markdown file.
 
@@ -35,6 +35,24 @@ Key                   | Type   | Default       | Description
 `showDockIcon`        | bool   | false         | Show app icon in Dock (false = menu bar only)
 `showMenuBarIcon`     | bool   | true          | Display clickable icon in system menu bar
 `updateURL`           | string | -             | Optional releases URL for Check for Updates…
+
+### File routing rules (`files`)
+
+Use the optional `files` map to redirect prompts that match specific regexes. Each entry can point to a fixed file via `"file"` or, with this release, a directory via `"directory"` coupled with an optional `"fileMatch"` regex. When a directory is supplied the app picks the most recently modified file whose name matches the pattern, e.g. daily notes. Example:
+
+```json
+"files": {
+  "10": {
+    "promptMatch": "^dailies?",
+    "directory": "~/Obsidian/Global/Dailies",
+    "fileMatch": "^\\d{4}-\\d{2}-\\d{2}.*\\.md$",
+    "filePositionMatch": "(?m)^## 📝 Tasks$",
+    "insertBehavior": "endoflist"
+  }
+}
+```
+
+The sample above sends prompts beginning with `daily` to the latest dated note, appending entries underneath the Tasks heading.
 
 ## How it works
 

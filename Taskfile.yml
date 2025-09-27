@@ -4,7 +4,8 @@ tasks:
   run:
     desc: "Build and run the app in background, logs to logs/app.log"
     cmds:
-      - swift main.swift
+      - mkdir -p .swift-module-cache
+      - swift -module-cache-path .swift-module-cache main.swift
     interactive: true
     silent: false
 

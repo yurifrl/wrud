@@ -6,3 +6,4 @@ logs/
 .DS_Store
 .app_pid
 wrud.app/
+.swift-module-cache/
