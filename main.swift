@@ -871,9 +871,32 @@ statusBarController.setup()
 // MARK: - Text Input UI
 
 final class CommandTextField: NSTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+              let chars = event.charactersIgnoringModifiers?.lowercased() else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        let action: Selector?
+        switch chars {
+        case "x": action = #selector(NSText.cut(_:))
+        case "c": action = #selector(NSText.copy(_:))
+        case "v": action = #selector(NSText.paste(_:))
+        case "a": action = #selector(NSText.selectAll(_:))
+        default: action = nil
+        }
+
+        if let action = action, NSApp.sendAction(action, to: nil, from: self) {
+            return true
+        }
+
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control), let chars = event.charactersIgnoringModifiers {
-            switch chars {
+            switch chars.lowercased() {
             case "a":
                 NSApp.sendAction(#selector(NSTextView.moveToBeginningOfLine(_:)), to: nil, from: self)
                 return
@@ -882,6 +905,12 @@ final class CommandTextField: NSTextField {
                 return
             case "w":
                 NSApp.sendAction(#selector(NSTextView.deleteWordBackward(_:)), to: nil, from: self)
+                return
+            case "d":
+                NSApp.sendAction(#selector(NSTextView.deleteForward(_:)), to: nil, from: self)
+                return
+            case "h":
+                NSApp.sendAction(#selector(NSText.deleteBackward(_:)), to: nil, from: self)
                 return
             default:
                 break
@@ -896,6 +925,8 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
     private let appConfig: AppConfig
     private var globalClickMonitor: Any?
     private weak var inputField: NSTextField?
+    private let previousApp: NSRunningApplication?
+    private var hasRestoredFocus = false
 
     init(appConfig: AppConfig, onSubmit: @escaping (String) -> Void) {
         self.onSubmit = onSubmit
@@ -934,6 +965,8 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
         backgroundView.layer?.borderWidth = appConfig.theme.borderWidth
         backgroundView.layer?.borderColor = appConfig.theme.borderColor.cgColor
         window.contentView?.addSubview(backgroundView)
+
+        self.previousApp = NSWorkspace.shared.frontmostApplication
 
         super.init(window: window)
 
@@ -1008,6 +1041,17 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
 
     required init?(coder: NSCoder) { nil }
 
+    private func restorePreviousFocusIfNeeded() {
+        guard !hasRestoredFocus,
+              let previousApp,
+              previousApp != NSRunningApplication.current else { return }
+
+        hasRestoredFocus = true
+        DispatchQueue.main.async {
+            previousApp.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+        }
+    }
+
     func windowDidResignKey(_ notification: Notification) {
         if appConfig.closeOnBlur {
             self.window?.close()
@@ -1048,6 +1092,7 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
                 }
             }
             self.window?.close()
+            restorePreviousFocusIfNeeded()
             return true
         default:
             return false

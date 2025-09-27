@@ -1,3 +1,4 @@
-- [ ] Allow Copy and Paster
-- [ ] Make it insert on the daily note after the last entry on #Tasks
+- [x] Allow Copy and Paste
+- [ ] Ctrl+
+- [x] Make it insert on the daily note after the last entry on #Tasks
 - [ ] Make it return focus to the original window before it took it
