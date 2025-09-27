@@ -895,8 +895,8 @@ final class CommandTextField: NSTextField {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.modifierFlags.contains(.control), let chars = event.charactersIgnoringModifiers {
-            switch chars.lowercased() {
+        if event.modifierFlags.contains(.control), let chars = normalizedControlCharacters(from: event) {
+            switch chars {
             case "a":
                 NSApp.sendAction(#selector(NSTextView.moveToBeginningOfLine(_:)), to: nil, from: self)
                 return
@@ -917,6 +917,17 @@ final class CommandTextField: NSTextField {
             }
         }
         super.keyDown(with: event)
+    }
+
+    private func normalizedControlCharacters(from event: NSEvent) -> String? {
+        guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else { return nil }
+        if chars.count == 1, let scalar = chars.unicodeScalars.first, (1...26).contains(Int(scalar.value)) {
+            let normalizedValue = scalar.value + 96
+            if let normalizedScalar = UnicodeScalar(normalizedValue) {
+                return String(Character(normalizedScalar))
+            }
+        }
+        return chars.lowercased()
     }
 }
 
