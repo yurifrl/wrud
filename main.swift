@@ -437,7 +437,11 @@ struct EntryWriter {
     }
 
     private func writeFileContent(_ content: String, to fileURL: URL) {
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            print("⚠️ Failed to write to \(fileURL.lastPathComponent): \(error)")
+        }
     }
 }
 
@@ -1092,14 +1096,28 @@ final class PaletteWindowController: NSWindowController, NSWindowDelegate, NSTex
             return false
         case #selector(NSResponder.insertNewline(_:)):
             if let tf = control as? NSTextField {
-                onSubmit(tf.stringValue)
                 let isShiftReturn = NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+                let textToSubmit = tf.stringValue
+
                 if isShiftReturn {
+                    // For shift+return, clear the field immediately and submit in background
                     tf.stringValue = ""
+
+                    // Submit the entry asynchronously to avoid blocking the UI
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        self.onSubmit(textToSubmit)
+                    }
+
+                    // Keep focus on the text field
                     DispatchQueue.main.async {
                         tf.becomeFirstResponder()
                     }
                     return true
+                } else {
+                    // For regular return, submit and close window
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        self.onSubmit(textToSubmit)
+                    }
                 }
             }
             self.window?.close()
